@@ -22,6 +22,11 @@ public sealed unsafe class Viewport : Control
     /// <summary>"" (select), "orbit", "pan" or "zoom": what a left drag does.</summary>
     public string NavMode { get; set; } = "";
     public Action<DrawingContext>? DrawOverlay { get; set; }
+    /// <summary>Called on a left press in select mode; returning true routes the drag to Dragging/DragEnded.</summary>
+    public Func<Point, bool>? DragStarting { get; set; }
+    public Action<Point>? Dragging { get; set; }
+    public Action? DragEnded { get; set; }
+    private bool _customDrag;
 
     public event Action<Point, KeyModifiers>? Clicked;
     public event Action<Point>? DoubleClicked;
@@ -201,6 +206,7 @@ public sealed unsafe class Viewport : Control
             DoubleClicked?.Invoke(pt.Position);
             _button = MouseButton.None;
         }
+        _customDrag = _button == MouseButton.Left && NavMode == "" && DragStarting?.Invoke(pt.Position) == true;
         e.Pointer.Capture(this);
         e.Handled = true;
     }
@@ -213,7 +219,11 @@ public sealed unsafe class Viewport : Control
         var props = e.GetCurrentPoint(this).Properties;
         bool down = props.IsLeftButtonPressed || props.IsMiddleButtonPressed || props.IsRightButtonPressed;
         if (down && !_dragging && (Math.Abs(p.X - _down.X) > 3 || Math.Abs(p.Y - _down.Y) > 3)) _dragging = true;
-        if (down && _dragging)
+        if (down && _dragging && _customDrag)
+        {
+            Dragging?.Invoke(p);
+        }
+        else if (down && _dragging)
         {
             bool shift = e.KeyModifiers.HasFlag(KeyModifiers.Shift);
             string mode = _button switch
@@ -239,11 +249,13 @@ public sealed unsafe class Viewport : Control
         base.OnPointerReleased(e);
         e.Pointer.Capture(null);
         var p = e.GetPosition(this);
-        if (!_dragging)
+        if (_customDrag && _dragging) DragEnded?.Invoke();
+        else if (!_dragging)
         {
             if (_button == MouseButton.Left && NavMode == "") Clicked?.Invoke(p, e.KeyModifiers);
             else if (_button == MouseButton.Right) RightClicked?.Invoke(p);
         }
+        _customDrag = false;
         _dragging = false;
         _button = MouseButton.None;
     }

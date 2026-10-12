@@ -63,7 +63,8 @@ public sealed class CommandPanel : Border
         Grid.SetColumn(cancelBtn, 3);
         foot.Children.Add(cancelBtn);
 
-        Child = new StackPanel { Children = { head, _rows, new Border { Margin = new Thickness(12, 0, 12, 8), Child = _error }, foot } };
+        var body = new ScrollViewer { Content = _rows, MaxHeight = 560, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
+        Child = new StackPanel { Children = { head, body, new Border { Margin = new Thickness(12, 0, 12, 8), Child = _error }, foot } };
     }
 
     private Grid Row(string label, Control value)
@@ -215,7 +216,22 @@ public sealed class SketchSession
     public bool Snap { get; set; } = true;
     public double SnapStep { get; set; } = 1;
     public int Sides { get; set; } = 6;
-    public List<List<SketchEntity>> History { get; } = new();
+    public List<(List<SketchEntity> ents, List<SketchConstraint> cons)> History { get; } = new();
+    /// <summary>Refs picked so far by a constraint or dimension tool.</summary>
+    public List<int> Picks { get; } = new();
+    /// <summary>Snap ref of the first point of the shape being drawn (-2 = none).</summary>
+    public int StartRef { get; set; } = -2;
+    /// <summary>Previous line of a line chain (-1 = none).</summary>
+    public int ChainEntity { get; set; } = -1;
+    public int Dof { get; set; } = -1;
+    public int DragRef { get; set; } = -2;
 
-    public void Remember() => History.Add(Draft.Entities.Select(e => e.Clone()).ToList());
+    public void Remember() => History.Add((Draft.Entities.Select(e => e.Clone()).ToList(),
+        Draft.Constraints.Select(c => new SketchConstraint { Kind = c.Kind, Refs = (int[])c.Refs.Clone(), Value = c.Value }).ToList()));
+
+    public void Restore((List<SketchEntity> ents, List<SketchConstraint> cons) h)
+    {
+        Draft.Entities = h.ents;
+        Draft.Constraints = h.cons;
+    }
 }

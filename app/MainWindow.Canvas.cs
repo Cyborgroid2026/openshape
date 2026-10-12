@@ -169,15 +169,18 @@ public sealed partial class MainWindow
 
         var profiles = Profiles.Compute(s.Draft);
         for (int i = 0; i < profiles.Count; i++) ctx.DrawGeometry(ProfileFill, null, RegionGeometry(f, profiles, i));
+        // like Fusion: blue while under-constrained, black once fully constrained
+        var pen = s.Dof == 0 && s.Draft.Entities.Count > 0 ? new Pen(new SolidColorBrush(Color.FromRgb(25, 25, 25)), 1.4) : CurvePen;
         for (int i = 0; i < s.Draft.Entities.Count; i++)
         {
             var e = s.Draft.Entities[i];
             if (PolyGeometry(f, e.Points(), e.Closed) is not { } g) continue;
             if (i == s.Selected) ctx.DrawGeometry(null, SelectedCurvePen, g);
-            ctx.DrawGeometry(null, CurvePen, g);
+            ctx.DrawGeometry(null, pen, g);
             foreach (var p in e.SnapPoints())
-                if (ToScreen(f, p) is { } sp) ctx.DrawRectangle(Brushes.White, new Pen(CurvePen.Brush, 1), new Rect(sp.X - 2.5, sp.Y - 2.5, 5, 5));
+                if (ToScreen(f, p) is { } sp) ctx.DrawRectangle(Brushes.White, new Pen(pen.Brush, 1), new Rect(sp.X - 2.5, sp.Y - 2.5, 5, 5));
         }
+        DrawConstraints(ctx);
         if (ToScreen(f, new P2(0, 0)) is { } o) ctx.DrawRectangle(new SolidColorBrush(Color.FromRgb(200, 120, 20)), null, new Rect(o.X - 3, o.Y - 3, 6, 6));
 
         // rubber band for the active tool
@@ -412,6 +415,11 @@ public sealed partial class MainWindow
 
     private void OnCanvasDoubleClick(Point p)
     {
+        if (_sk != null && DimensionAt(p) is var dim and >= 0)
+        {
+            EditDimension(dim, p);
+            return;
+        }
         if (_sk != null)
         {
             // double-click ends a line chain
@@ -487,6 +495,7 @@ public sealed partial class MainWindow
         draft.Visible = true;
         var baseState = Evaluator.Run(_doc.Features, editIndex >= 0 ? editIndex : _doc.Marker);
         _sk = new SketchSession { Draft = draft, EditIndex = editIndex, Base = baseState };
+        SolveSketch();
         _preview = baseState;
         _selBodies.Clear();
         _selProfiles.Clear();
@@ -519,22 +528,23 @@ public sealed partial class MainWindow
     }
 
     /// <summary>Screen point to snapped sketch coordinates.</summary>
-    private P2 SketchPoint(Point screen, out bool snapped)
+    private P2 SketchPoint(Point screen, out bool snapped) => SketchPoint(screen, out snapped, out _);
+
+    private P2 SketchPoint(Point screen, out bool snapped, out int snapRef)
     {
         snapped = false;
+        snapRef = -2;
         var s = _sk!;
         var f = s.Draft.Frame;
         var raw = HitPlane(f, screen)?.p ?? new P2(0, 0);
         // snap to existing points within 10 px
-        var candidates = s.Draft.Entities.SelectMany(e => e.SnapPoints()).Append(new P2(0, 0));
-        if (s.ChainStart is { } cs) candidates = candidates.Append(cs);
         double best = 10;
         P2? hit = null;
-        foreach (var c in candidates)
+        foreach (var (c, r) in SnapRefs(s.Draft))
         {
             if (ToScreen(f, c) is not { } sp) continue;
             double d = Math.Sqrt((sp.X - screen.X) * (sp.X - screen.X) + (sp.Y - screen.Y) * (sp.Y - screen.Y));
-            if (d < best) { best = d; hit = c; }
+            if (d < best) { best = d; hit = c; snapRef = r == -3 ? -2 : r; }
         }
         if (hit is { } h) { snapped = true; return h; }
         if (s.Snap && s.SnapStep > 0) return new P2(Math.Round(raw.X / s.SnapStep) * s.SnapStep, Math.Round(raw.Y / s.SnapStep) * s.SnapStep);
@@ -542,56 +552,110 @@ public sealed partial class MainWindow
     }
 
     /// <summary>Add a sketch point (as if clicked) in sketch coordinates. Used by the canvas and by tests.</summary>
-    public void SketchInput(P2 q)
+    /// <summary>
+    /// Add a sketch point (as if clicked) in sketch coordinates; <paramref name="snapRef"/> is the
+    /// point it snapped to (-2 none, -1 origin). Like Fusion, snapping and near-axis lines add
+    /// coincident / horizontal / vertical constraints automatically.
+    /// </summary>
+    public void SketchInput(P2 q, int snapRef = -2)
     {
         var s = _sk!;
+        var auto = new List<SketchConstraint>();
+        int added = -1;
         void Add(string kind, params double[] p)
         {
             s.Remember();
             s.Draft.Entities.Add(new SketchEntity { Kind = kind, P = p });
+            added = s.Draft.Entities.Count - 1;
+        }
+        void Coincide(int a, int b)
+        {
+            if (a != -2 && b != -2 && a != b) auto.Add(new SketchConstraint { Kind = "coincident", Refs = new[] { a, b } });
         }
         switch (s.Tool)
         {
             case "line":
+            {
                 if (s.Pts.Count == 0)
                 {
                     s.Pts.Add(q);
                     s.ChainStart = q;
+                    s.StartRef = snapRef;
+                    s.ChainEntity = -1;
                     break;
                 }
                 var last = s.Pts[^1];
                 if (last.Dist(q) < 1e-9) break;
+                string? axis = null;
+                double tan = Math.Tan(1.5 * Math.PI / 180);
+                if (snapRef == -2)
+                {
+                    if (Math.Abs(q.Y - last.Y) <= tan * Math.Abs(q.X - last.X)) { q = new P2(q.X, last.Y); axis = "horizontal"; }
+                    else if (Math.Abs(q.X - last.X) <= tan * Math.Abs(q.Y - last.Y)) { q = new P2(last.X, q.Y); axis = "vertical"; }
+                }
                 Add("line", last.X, last.Y, q.X, q.Y);
+                Coincide(SketchSolver.Ref(added, 0), s.ChainEntity >= 0 ? SketchSolver.Ref(s.ChainEntity, 1) : s.StartRef);
+                Coincide(SketchSolver.Ref(added, 1), snapRef);
+                if (axis != null) auto.Add(new SketchConstraint { Kind = axis, Refs = new[] { SketchSolver.Ref(added, 0) } });
                 if (s.ChainStart is { } st && st.Dist(q) < 1e-9)
                 {
                     s.Pts.Clear();
                     s.ChainStart = null;
+                    s.ChainEntity = -1;
                 }
                 else
                 {
                     s.Pts.Clear();
                     s.Pts.Add(q);
+                    s.ChainEntity = added;
                 }
                 break;
+            }
             case "rect" or "crect" or "circle" or "polygon":
-                if (s.Pts.Count == 0) { s.Pts.Add(q); break; }
+            {
+                if (s.Pts.Count == 0) { s.Pts.Add(q); s.StartRef = snapRef; break; }
                 var a = s.Pts[0];
                 s.Pts.Clear();
                 if (a.Dist(q) < 1e-9) break;
-                if (s.Tool == "rect") Add("rect", a.X, a.Y, q.X, q.Y);
+                if (s.Tool == "rect")
+                {
+                    Add("rect", a.X, a.Y, q.X, q.Y);
+                    Coincide(SketchSolver.Ref(added, 0), s.StartRef);
+                    Coincide(SketchSolver.Ref(added, 2), snapRef);
+                }
                 else if (s.Tool == "crect") Add("rect", 2 * a.X - q.X, 2 * a.Y - q.Y, q.X, q.Y);
-                else if (s.Tool == "circle") Add("circle", a.X, a.Y, a.Dist(q));
-                else Add("polygon", a.X, a.Y, a.Dist(q), s.Sides);
+                else
+                {
+                    if (s.Tool == "circle") Add("circle", a.X, a.Y, a.Dist(q));
+                    else Add("polygon", a.X, a.Y, a.Dist(q), s.Sides);
+                    Coincide(SketchSolver.Ref(added, 0), s.StartRef);
+                }
                 break;
+            }
             case "arc":
                 s.Pts.Add(q);
+                if (s.Pts.Count == 1) s.StartRef = snapRef;
+                if (s.Pts.Count == 2) s.ChainEntity = snapRef;   // end point's snap, kept until the arc is made
                 if (s.Pts.Count == 3)
                 {
                     var (p0, p1, pm) = (s.Pts[0], s.Pts[1], s.Pts[2]);
                     s.Pts.Clear();
                     Add("arc", p0.X, p0.Y, p1.X, p1.Y, pm.X, pm.Y);
+                    Coincide(SketchSolver.Ref(added, 0), s.StartRef);
+                    Coincide(SketchSolver.Ref(added, 1), s.ChainEntity);
+                    s.ChainEntity = -1;
                 }
                 break;
+        }
+        if (added >= 0)
+        {
+            s.Draft.Constraints.AddRange(auto);
+            if (!SolveSketch())
+            {
+                // auto constraints that over-constrain are dropped
+                foreach (var c in auto) s.Draft.Constraints.Remove(c);
+                SolveSketch();
+            }
         }
         ShowSketchPalette();
         View.InvalidateVisual();
@@ -600,8 +664,20 @@ public sealed partial class MainWindow
     private void SketchClick(Point screen)
     {
         var s = _sk!;
+        if (s.Tool == "dimension" || ConstraintTools.Contains(s.Tool))
+        {
+            if (_pendingLineDim != null && HitRef(screen) == null) FinishPendingLineDimension(screen);
+            else ConstraintClick(screen);
+            return;
+        }
         if (s.Tool == "")
         {
+            int dim = DimensionAt(screen);
+            if (dim >= 0)
+            {
+                EditDimension(dim, screen);
+                return;
+            }
             // select a curve
             var f = s.Draft.Frame;
             s.Selected = -1;
@@ -622,7 +698,8 @@ public sealed partial class MainWindow
             View.InvalidateVisual();
             return;
         }
-        SketchInput(SketchPoint(screen, out _));
+        var q = SketchPoint(screen, out _, out int snapRef);
+        SketchInput(q, snapRef);
     }
 
     private static double SegmentDistance(Point p, Point a, Point b)
@@ -646,6 +723,38 @@ public sealed partial class MainWindow
         panel.AddNumber("평면 간격띄우기", s.Draft.Offset, "mm", v => { s.Draft.Offset = v; View.InvalidateVisual(); });
         panel.AddNumber("다각형 면 수", s.Sides, "", v => s.Sides = Math.Clamp((int)Math.Round(v), 3, 64));
         panel.AddInfo("곡선", $"{s.Draft.Entities.Count}개 · 프로파일 {Profiles.Compute(s.Draft).Count}개");
+        panel.AddInfo("구속 상태", s.Draft.Entities.Count == 0 ? "-" : s.Dof == 0 ? "완전히 구속됨" : s.Dof > 0 ? $"자유도 {s.Dof}" : "확인 필요");
+        if (s.Draft.Constraints.Count > 0)
+        {
+            panel.AddHeader($"구속조건 및 치수 ({s.Draft.Constraints.Count})");
+            for (int i = 0; i < s.Draft.Constraints.Count; i++)
+            {
+                int k = i;
+                var c = s.Draft.Constraints[i];
+                var row = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto,24"), Height = 26 };
+                row.Children.Add(Ui.Label(SketchConstraint.DisplayName(c.Kind), 12));
+                if (SketchConstraint.IsDimension(c.Kind))
+                {
+                    var box = new TextBox { Text = CommandPanel.Format(c.Value, c.Kind == "angle" ? "deg" : "mm"), Width = 96, Height = 24, MinHeight = 0, Padding = new Thickness(4, 1), FontSize = 12, Tag = $"치수{i + 1}" };
+                    box.KeyDown += (_, e) => { if (e.Key == Key.Enter && CommandPanel.TryParse(box.Text, out var v) && v > 0) SetDimension(k, v); };
+                    Grid.SetColumn(box, 1);
+                    row.Children.Add(box);
+                }
+                var del = new FlatButton { Width = 20, Height = 20, Child = Ui.Centered(Icons.Line("close", 10, Ui.Muted)) }.Init();
+                ToolTip.SetTip(del, "삭제");
+                del.Click += () =>
+                {
+                    s.Remember();
+                    s.Draft.Constraints.RemoveAt(k);
+                    SolveSketch();
+                    ShowSketchPalette();
+                    View.InvalidateVisual();
+                };
+                Grid.SetColumn(del, 2);
+                row.Children.Add(del);
+                panel.AddControl(row);
+            }
+        }
         if (s.Selected >= 0 && s.Selected < s.Draft.Entities.Count)
         {
             var e = s.Draft.Entities[s.Selected];

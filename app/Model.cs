@@ -318,6 +318,7 @@ public sealed class SketchFeature : Feature
     public bool Visible { get; set; } = true;
     /// <summary>Frame (origin, u, v, n) when the sketch sits on a model face (Plane = "face").</summary>
     public double[]? Custom { get; set; }
+    public List<SketchConstraint> Constraints { get; set; } = new();
     public override string Command => "sketch";
 
     [JsonIgnore]

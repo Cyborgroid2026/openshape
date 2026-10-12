@@ -63,6 +63,9 @@ public sealed partial class MainWindow : Window
         };
 
         View.DrawOverlay = DrawOverlay;
+        View.DragStarting = SketchDragStart;
+        View.Dragging = SketchDrag;
+        View.DragEnded = SketchDragEnd;
         View.Clicked += OnCanvasClick;
         View.Hovered += OnCanvasHover;
         View.DoubleClicked += OnCanvasDoubleClick;
@@ -172,7 +175,7 @@ public sealed partial class MainWindow : Window
     public void Undo()
     {
         if (_cmd != null) { CancelCommand(); return; }
-        if (_sk != null) { if (_sk.Draft.Entities.Count > 0 && _sk.History.Count > 0) { _sk.Draft.Entities = _sk.History[^1]; _sk.History.RemoveAt(_sk.History.Count - 1); View.InvalidateVisual(); } return; }
+        if (_sk != null) { if (_sk.History.Count > 0) { _sk.Restore(_sk.History[^1]); _sk.History.RemoveAt(_sk.History.Count - 1); _sk.Selected = -1; SolveSketch(); ShowSketchPalette(); View.InvalidateVisual(); } return; }
         if (_undo.Count == 0) return;
         _redo.Add(_doc.Save());
         _doc = Doc.Load(_undo[^1]);
@@ -398,10 +401,18 @@ public sealed partial class MainWindow : Window
         ["trim"] = "자르기",
         ["dimension"] = "스케치 치수",
         ["constraint"] = "구속조건",
+        ["c_hv"] = "수평/수직",
+        ["c_coincident"] = "일치",
+        ["c_parallel"] = "평행",
+        ["c_perpendicular"] = "직각",
+        ["c_equal"] = "동일",
+        ["c_fix"] = "고정/고정 해제",
+        ["c_midpoint"] = "중간점",
+        ["c_concentric"] = "동심",
         ["finish"] = "스케치 마침",
     };
 
-    private static readonly HashSet<string> Unsupported = new() { "newcomponent", "joint", "section", "parameters", "trim", "dimension", "constraint", "presspull" };
+    private static readonly HashSet<string> Unsupported = new() { "newcomponent", "joint", "section", "parameters", "trim", "presspull" };
 
     /// <summary>One toolbar group: a row of big icons with the group name (and ▾ menu) underneath.</summary>
     private Control Group(string title, string[] shown, string[] menu)
@@ -451,11 +462,12 @@ public sealed partial class MainWindow : Window
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4, 2, 0, 0) };
         if (_sk != null)
         {
-            row.Children.Add(Group("작성", new[] { "line", "rect", "circle", "arc", "polygon" }, new[] { "line", "rect", "crect", "circle", "arc", "polygon" }));
+            row.Children.Add(Group("작성", new[] { "line", "rect", "circle", "arc", "polygon", "dimension" }, new[] { "line", "rect", "crect", "circle", "arc", "polygon", "-", "dimension" }));
             row.Children.Add(Separator());
             row.Children.Add(Group("수정", new[] { "trim" }, new[] { "trim" }));
             row.Children.Add(Separator());
-            row.Children.Add(Group("구속조건", new[] { "dimension", "constraint" }, new[] { "dimension", "constraint" }));
+            row.Children.Add(Group("구속조건", new[] { "c_hv", "c_coincident", "c_parallel", "c_perpendicular", "c_equal", "c_fix", "c_midpoint", "c_concentric" },
+                new[] { "c_hv", "c_coincident", "c_parallel", "c_perpendicular", "c_equal", "c_fix", "c_midpoint", "c_concentric" }));
             row.Children.Add(Separator());
             row.Children.Add(Group("검사", new[] { "measure" }, new[] { "measure" }));
             row.Children.Add(Separator());
@@ -967,9 +979,9 @@ public sealed partial class MainWindow : Window
     private void ShowAbout()
     {
         var panel = new CommandPanel("정보", null, () => CloseDialog(), null);
-        panel.AddText("OpenShape CAD 0.2.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
+        panel.AddText("OpenShape CAD 0.3.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
                       "Autodesk의 코드나 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다.\n\n" +
-                      "아직 지원하지 않는 기능: 누르기/당기기, 구성요소·조인트, 곡면·메쉬·판금 작업공간, 치수·구속조건, .f3d 직접 열기(클라우드 동기화의 STEP으로 열 수 있음)");
+                      "아직 지원하지 않는 기능: 누르기/당기기, 구성요소·조인트, 곡면·메쉬·판금 작업공간, 접선·대칭 구속, .f3d 직접 열기(클라우드 동기화의 STEP으로 열 수 있음)");
         ShowDialog(panel);
     }
 }

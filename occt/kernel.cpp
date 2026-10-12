@@ -652,3 +652,88 @@ API uint32_t ok_from_mesh(const double* tris, int n) {
         return put(sewn);
     });
 }
+
+// ------------------------------------------------------------------- sketch solver (SolveSpace)
+
+#include <slvs.h>
+
+/// Solve a 2D sketch in place.
+/// params: values (updated); pts: (paramX, paramY) per point; ents: (type, a, b, c) per entity,
+///   type 0 line(ptA, ptB), 1 circle(center pt, radius param), 2 arc(center, start, end);
+/// cons: (type, value, ptA, ptB, entA, entB) per constraint (-1 = unused);
+/// dragged: param indices the solver should move as little as possible.
+/// Returns the SolveSpace result (0 = okay) and writes the remaining degrees of freedom.
+API int ok_solve(double* params, int nparams, const int32_t* pts, int npts, const int32_t* ents, int nents,
+                 const double* cons, int ncons, const int32_t* dragged, int ndragged, int32_t* dof) {
+    std::vector<Slvs_Param> P;
+    std::vector<Slvs_Entity> E;
+    std::vector<Slvs_Constraint> C;
+    const Slvs_hGroup g1 = 1, g2 = 2;
+    // workplane: origin + identity orientation, fixed (group 1)
+    P.push_back(Slvs_MakeParam(1, g1, 0));
+    P.push_back(Slvs_MakeParam(2, g1, 0));
+    P.push_back(Slvs_MakeParam(3, g1, 0));
+    P.push_back(Slvs_MakeParam(4, g1, 1));
+    P.push_back(Slvs_MakeParam(5, g1, 0));
+    P.push_back(Slvs_MakeParam(6, g1, 0));
+    P.push_back(Slvs_MakeParam(7, g1, 0));
+    E.push_back(Slvs_MakePoint3d(1, g1, 1, 2, 3));
+    E.push_back(Slvs_MakeNormal3d(2, g1, 4, 5, 6, 7));
+    E.push_back(Slvs_MakeWorkplane(3, g1, 1, 2));
+    const Slvs_hEntity wp = 3, normal = 2;
+    const uint32_t PB = 100;            // param handle = PB + index
+    const uint32_t PTB = 1000;          // point entity handle = PTB + index
+    const uint32_t EB = 100000;         // entity handle = EB + index * 2 (+1 for a circle's radius)
+    for (int i = 0; i < nparams; i++) P.push_back(Slvs_MakeParam(PB + i, g2, params[i]));
+    for (int i = 0; i < npts; i++) E.push_back(Slvs_MakePoint2d(PTB + i, g2, wp, PB + pts[i * 2], PB + pts[i * 2 + 1]));
+    for (int i = 0; i < nents; i++) {
+        const int32_t* e = ents + i * 4;
+        uint32_t h = EB + i * 2;
+        if (e[0] == 0) E.push_back(Slvs_MakeLineSegment(h, g2, wp, PTB + e[1], PTB + e[2]));
+        else if (e[0] == 1) {
+            E.push_back(Slvs_MakeDistance(h + 1, g2, wp, PB + e[2]));
+            E.push_back(Slvs_MakeCircle(h, g2, wp, PTB + e[1], normal, h + 1));
+        } else E.push_back(Slvs_MakeArcOfCircle(h, g2, wp, normal, PTB + e[1], PTB + e[2], PTB + e[3]));
+    }
+    auto pt = [&](double v) -> Slvs_hEntity { return v < 0 ? 0 : PTB + (uint32_t)v; };
+    auto en = [&](double v) -> Slvs_hEntity { return v < 0 ? 0 : EB + (uint32_t)v * 2; };
+    for (int i = 0; i < ncons; i++) {
+        const double* c = cons + i * 6;
+        int type;
+        switch ((int)c[0]) {
+            case 0: type = SLVS_C_POINTS_COINCIDENT; break;
+            case 1: type = SLVS_C_HORIZONTAL; break;
+            case 2: type = SLVS_C_VERTICAL; break;
+            case 3: type = SLVS_C_PT_PT_DISTANCE; break;
+            case 4: type = SLVS_C_DIAMETER; break;
+            case 5: type = SLVS_C_PARALLEL; break;
+            case 6: type = SLVS_C_PERPENDICULAR; break;
+            case 7: type = SLVS_C_EQUAL_LENGTH_LINES; break;
+            case 8: type = SLVS_C_ANGLE; break;
+            case 9: type = SLVS_C_EQUAL_RADIUS; break;
+            case 10: type = SLVS_C_WHERE_DRAGGED; break;
+            case 11: type = SLVS_C_PT_ON_LINE; break;
+            case 12: type = SLVS_C_PT_ON_CIRCLE; break;
+            case 13: type = SLVS_C_AT_MIDPOINT; break;
+            default: continue;
+        }
+        C.push_back(Slvs_MakeConstraint(i + 1, g2, type, wp, c[1], pt(c[2]), pt(c[3]), en(c[4]), en(c[5])));
+    }
+    Slvs_System sys = {};
+    sys.param = P.data();
+    sys.params = (int)P.size();
+    sys.entity = E.data();
+    sys.entities = (int)E.size();
+    sys.constraint = C.data();
+    sys.constraints = (int)C.size();
+    std::vector<Slvs_hConstraint> failed(C.size() + 1);
+    sys.failed = failed.data();
+    sys.faileds = (int)failed.size();
+    sys.calculateFaileds = 1;
+    for (int i = 0; i < ndragged && i < 4; i++) sys.dragged[i] = PB + dragged[i];
+    Slvs_Solve(&sys, g2);
+    if (sys.result == SLVS_RESULT_OKAY)
+        for (int i = 0; i < nparams; i++) params[i] = P[7 + i].val;
+    if (dof) *dof = sys.dof;
+    return sys.result;
+}

@@ -8,7 +8,7 @@
     <AssemblyName>openshape</AssemblyName>
     <RootNamespace>OpenShape</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.22" />

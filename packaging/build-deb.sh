@@ -2,7 +2,7 @@
 # Build the Rust engine and the self-contained C# app, run the tests, then package a .deb.
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION=0.2.0
+VERSION=0.3.0
 ARCH=amd64
 PKG=openshape_${VERSION}_${ARCH}
 STAGE="$ROOT/build/$PKG"
@@ -64,13 +64,14 @@ Section: graphics
 Priority: optional
 Architecture: $ARCH
 Installed-Size: $SIZE
-Depends: libc6, libgcc-s1, libstdc++6, libx11-6, libice6, libsm6, libfontconfig1, libocct-foundation-7.6t64, libocct-modeling-data-7.6t64, libocct-modeling-algorithms-7.6t64, libocct-data-exchange-7.6t64
+Depends: libc6, libgcc-s1, libstdc++6, libx11-6, libice6, libsm6, libfontconfig1, libocct-foundation-7.6t64, libocct-modeling-data-7.6t64, libocct-modeling-algorithms-7.6t64, libocct-data-exchange-7.6t64, libslvs1t64
 Maintainer: a71143055 <a71143055@gmail.com>
 Description: Parametric 3D CAD for Ubuntu
  OpenShape CAD is a clean-room parametric modeller whose screen layout
  follows Autodesk Fusion (toolbar, browser, timeline, ViewCube, navigation
  bar): sketches (also on model faces), extrude, revolve, primitives,
- booleans, fillet, chamfer, shell, move, mirror, patterns, STEP/IGES import,
+ booleans, fillet, chamfer, shell, sketch dimensions and constraints
+ (SolveSpace solver), move, mirror, patterns, STEP/IGES import,
  STEP/STL/OBJ/USD export. UI in C# (Avalonia), B-rep geometry by
  OpenCASCADE, display and mesh I/O in Rust.
  Contains no Autodesk code or assets.

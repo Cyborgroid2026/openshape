@@ -38,6 +38,23 @@ public sealed partial class MainWindow
         {
             switch (id)
             {
+                case "dimension" or "c_hv" or "c_coincident" or "c_parallel" or "c_perpendicular" or "c_equal" or "c_fix" or "c_midpoint" or "c_concentric":
+                    _sk.Tool = id;
+                    _sk.Pts.Clear();
+                    _sk.Picks.Clear();
+                    _pickKinds.Clear();
+                    _pendingLineDim = null;
+                    SetPrompt(id switch
+                    {
+                        "dimension" => "치수를 줄 선, 원 또는 두 점을 클릭하세요.",
+                        "c_hv" => "수평/수직으로 만들 선을 클릭하세요.",
+                        "c_fix" => "고정할 점을 클릭하세요.",
+                        "c_midpoint" => "점과 선을 차례로 클릭하세요.",
+                        "c_coincident" => "두 점(또는 점과 선)을 차례로 클릭하세요.",
+                        "c_concentric" => "두 원을 차례로 클릭하세요.",
+                        _ => "두 개체를 차례로 클릭하세요.",
+                    });
+                    break;
                 case "line" or "rect" or "crect" or "circle" or "arc" or "polygon":
                     _sk.Tool = id;
                     _sk.Pts.Clear();
@@ -678,7 +695,9 @@ public sealed partial class MainWindow
                 {
                     _sk.Remember();
                     _sk.Draft.Entities.RemoveAt(_sk.Selected);
+                    SketchSolver.EntityRemoved(_sk.Draft, _sk.Selected);
                     _sk.Selected = -1;
+                    SolveSketch();
                     ShowSketchPalette();
                     View.InvalidateVisual();
                 }
@@ -687,6 +706,7 @@ public sealed partial class MainWindow
             case Key.L when !ctrl && _sk != null: RunCommand("line"); break;
             case Key.R when !ctrl && _sk != null: RunCommand("rect"); break;
             case Key.C when !ctrl && _sk != null: RunCommand("circle"); break;
+            case Key.D when !ctrl && _sk != null: RunCommand("dimension"); break;
             case Key.E when !ctrl && _sk == null && _cmd == null: RunCommand("extrude"); break;
             case Key.M when !ctrl && _sk == null && _cmd == null: RunCommand("move"); break;
             case Key.F6: FitAll(); break;

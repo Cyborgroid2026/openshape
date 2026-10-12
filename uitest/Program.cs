@@ -143,6 +143,7 @@ Shot("cut");
 
 // --- parametric edit from the timeline
 w.EditFeature(1);
+Pump();
 Check(w.Command?.Draft is ExtrudeFeature, "double-clicking a timeline item reopens its dialog");
 SetField("거리", "20");
 w.RefreshPreview();
@@ -234,6 +235,81 @@ Check(w.State.Bodies.Count == 3, "moving the marker to the end restores everythi
 w.View.SetView(-55, 28);
 w.FitAll();
 Shot("final_iso");
+// ================= sketch constraints and dimensions (SolveSpace) =================
+w.MoveMarker(w.Document.Features.Count);
+Click(Tip("스케치 작성"));
+Click(Text("XY"));
+w.View.Cam.Target = new V3(40, 12, 0);
+w.View.Cam.Distance = 160;
+w.View.Invalidate3D();
+Pump();
+Click(Tip("선"));
+Click(SketchPt(0, 0));
+Click(SketchPt(40, 1));
+Click(SketchPt(40, 30));
+Click(SketchPt(0, 0));
+var dk = w.Sketch!.Draft;
+Check(dk.Entities.Count == 3 && dk.Constraints.Any(c => c.Kind == "horizontal") && dk.Constraints.Any(c => c.Kind == "vertical"),
+    "drawing near-axis lines adds horizontal and vertical constraints automatically");
+Check(dk.Constraints.Count(c => c.Kind == "coincident") >= 3, "snapped line ends are joined with coincident constraints");
+Click(Tip("스케치 치수"));
+Click(SketchPt(20, 0));
+Click(SketchPt(20, -12));
+Key(Avalonia.Input.Key.Escape);
+Check(dk.Constraints.Last() is { Kind: "distance" } d1 && Math.Abs(d1.Value - 40) < 1e-6, "dimension tool measures the line (40 mm)");
+w.SetDimension(dk.Constraints.Count - 1, 50);
+Check(Math.Abs(dk.Entities[0].P[2] - 50) < 1e-6 && Math.Abs(dk.Entities[1].P[0] - 50) < 1e-6, "changing the dimension to 50 moves the line and the joined vertical line");
+Click(Tip("스케치 치수"));
+Click(SketchPt(50, 15));
+Click(SketchPt(62, 15));
+Key(Avalonia.Input.Key.Escape);
+w.SetDimension(dk.Constraints.Count - 1, 25);
+Check(Math.Abs(dk.Entities[1].P[3] - 25) < 1e-6 && w.Sketch!.Dof == 0, $"triangle is fully constrained after two dimensions (dof {w.Sketch!.Dof})");
+Shot("constrained_sketch");
+
+Click(Tip("중심 지름 원"));
+Click(SketchPt(35, 8));
+Click(SketchPt(40, 8));
+Click(Tip("스케치 치수"));
+Click(SketchPt(35, 13));
+Key(Avalonia.Input.Key.Escape);
+w.SetDimension(dk.Constraints.Count - 1, 8);
+Check(Math.Abs(dk.Entities[3].P[2] - 4) < 1e-6, "diameter dimension 8 sets the circle radius to 4");
+Click(Tip("중심 지름 원"));
+Click(SketchPt(44, 14));
+Click(SketchPt(47, 14));
+Click(Tip("동일"));
+Click(SketchPt(35, 12));
+Click(SketchPt(44, 17));
+Check(Math.Abs(dk.Entities[4].P[2] - 4) < 1e-6, "equal constraint makes the second circle the same size");
+Key(Avalonia.Input.Key.Escape);
+Check(w.Sketch!.Tool == "", "Escape leaves the constraint tool");
+var from = SketchPt(44, 14);
+var to = SketchPt(44, 12);
+w.MouseMove(from);
+w.MouseDown(from, MouseButton.Left);
+Pump(1);
+foreach (var k in Enumerable.Range(1, 8))
+{
+    w.MouseMove(from + (to - from) * (k / 8.0), RawInputModifiers.LeftMouseButton);
+    Pump(1);
+}
+w.MouseUp(to, MouseButton.Left);
+Pump();
+Check(Math.Abs(dk.Entities[4].P[1] - 12) < 0.3 && Math.Abs(dk.Entities[4].P[2] - 4) < 1e-6, $"dragging the circle centre moves it and keeps the equal radius (y {dk.Entities[4].P[1]:0.00})");
+Shot("constraints_more");
+Click(Tip("스케치 마침"));
+var sk4 = w.Document.Features.OfType<SketchFeature>().Last();
+Check(sk4.Constraints.Count >= 9, "constraints are saved with the sketch");
+Click(Tip("돌출"));
+Click(World(sk4.Frame.At(new P2(30, 5))));
+SetField("거리", "10");
+SetCombo("작업", 3);
+w.RefreshPreview();
+Click(Text("확인"));
+double tri = (0.5 * 50 * 25 - 2 * Math.PI * 16) * 10;
+Check(Near(w.State.Bodies.Last().Solid.Info.Volume, tri, 0.001), $"extruded constrained triangle with two holes: {w.State.Bodies.Last().Solid.Info.Volume:0.0} ≈ {tri:0.0} mm³");
+
 // ================= B-rep features (OpenCASCADE) =================
 
 double BodyVol(int i) => w.State.Bodies[i].Solid.Info.Volume;
@@ -287,7 +363,7 @@ Shot("face_pocket");
 
 // replay the rest of the timeline on top of the inserted features
 w.MoveMarker(w.Document.Features.Count);
-Check(w.State.Bodies.Count == 3 && w.Document.Features.All(f => f.Error == null), "later features still rebuild after inserting fillet/chamfer/pocket");
+Check(w.State.Bodies.Count == 4 && w.Document.Features.All(f => f.Error == null), "later features still rebuild after inserting fillet/chamfer/pocket");
 
 // shell a new box from its top face
 Click(Tip("상자"));
