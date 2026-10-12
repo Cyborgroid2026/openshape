@@ -24,7 +24,7 @@ if (Directory.Exists(realCloud))
 }
 OpenShape.IsaacLink.Exchange = testExchange;
 OpenShape.IsaacLink.Port = 1;   // nothing listens there
-var w = new MainWindow(Array.Empty<string>()) { Width = 1500, Height = 920, AutoSyncOnSave = false };
+var w = new MainWindow(Array.Empty<string>()) { Width = 1500, Height = 920, AutoSyncOnSave = false, CheckForUpdates = false };
 w.Show();
 Pump();
 int step = 0;
@@ -105,6 +105,7 @@ bool Near(double a, double b, double rel = 0.015) => Math.Abs(a - b) <= rel * Ma
 
 if (Environment.GetEnvironmentVariable("OSC_JUMP") == "sketchtools") goto SketchTools;
 if (Environment.GetEnvironmentVariable("OSC_JUMP") == "shortcuts") goto Shortcuts;
+if (Environment.GetEnvironmentVariable("OSC_JUMP") == "updates") goto Updates;
 Shot("start");
 Check(w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "솔리드") && w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "브라우저"),
     "toolbar tabs and browser are shown");
@@ -851,6 +852,32 @@ Check(w.State.Bodies.Count == 2, "the pasted copy is a new body");
 Key(Avalonia.Input.Key.I);
 Check(w.Command?.Id == "measure", "I opens measure");
 Key(Avalonia.Input.Key.Escape);
+
+// ---- updates: bell notification + OpenShape Client Downloader window
+Updates:
+Click(Tip("알림 센터"));
+Pump();
+Check(w.Command?.Id == "notifications" && w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text?.StartsWith("새 알림이 없습니다") == true && t.IsEffectivelyVisible), "bell opens the notification centre (no updates)");
+Key(Avalonia.Input.Key.Escape);
+w.ApplyUpdateCheck("latest=9.9.9 installed=1.1.0 asset=openshape_9.9.9_amd64.deb size=1 update=True");
+Pump();
+Check(w.UpdateAvailable, "installer --check output with update=True lights the bell");
+Click(Tip("알림 센터"));
+Pump();
+Check(w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "OpenShape CAD 9.9.9을(를) 설치할 수 있습니다." && t.IsEffectivelyVisible), "notification names the new version");
+Shot("update_notification");
+Key(Avalonia.Input.Key.Escape);
+Check(OpenShapeInstaller.Updater.IsNewer("1.1.0", "1.0.1") && !OpenShapeInstaller.Updater.IsNewer("1.0.1", "1.1.0") && !OpenShapeInstaller.Updater.IsNewer("1.1.0", "1.1.0") && OpenShapeInstaller.Updater.IsNewer("1.1.0", null), "installer version comparison");
+var iw = new OpenShapeInstaller.InstallerWindow();
+iw.Show();
+iw.Status.Text = "OpenShape CAD 1.0.1 → 1.1.0 업데이트를 내려받는 중...";
+iw.Bar.Value = 0.42;
+iw.Detail.Text = "14.7 MB / 35.0 MB";
+iw.Buttons(("취소", false, () => { }));
+Pump(8);
+iw.CaptureRenderedFrame()?.Save(Path.Combine(outDir, $"{++step:00}_client_downloader.png"));
+Check(iw.Title == "OpenShape CAD 설치", "client downloader window opens");
+iw.Close();
 
 Console.WriteLine(failures.Count == 0 ? "ALL PASSED" : $"{failures.Count} FAILED");
 return failures.Count == 0 ? 0 : 1;

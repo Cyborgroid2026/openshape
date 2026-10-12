@@ -10,5 +10,6 @@
     <PackageReference Include="Avalonia.Headless" Version="11.3.22" />
     <PackageReference Include="Avalonia.Skia" Version="11.3.22" />
     <ProjectReference Include="../app/OpenShape.csproj" />
+    <ProjectReference Include="../installer/Installer.csproj" />
   </ItemGroup>
 </Project>

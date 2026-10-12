@@ -8,3 +8,5 @@ build-uitest/
 dist/
 build-deps/
 occt/build/
+installer/bin/
+installer/obj/

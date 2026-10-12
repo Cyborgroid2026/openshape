@@ -3,6 +3,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Path = System.IO.Path;
 
 namespace OpenShape;
 
@@ -206,6 +207,70 @@ public sealed partial class MainWindow
     }
 
     public bool ShortcutBoxOpen => _shortcutBox != null;
+
+    // ------------------------------------------------------------ updates
+
+    private readonly Avalonia.Controls.Shapes.Ellipse _bellDot = new()
+    {
+        Width = 8, Height = 8, Fill = Ui.Accent, HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Top,
+    };
+    private FlatButton? _bell;
+    private string? _updateInfo;
+    public bool UpdateAvailable => _updateInfo != null;
+
+    /// <summary>Tests turn this off so the app never checks GitHub.</summary>
+    public bool CheckForUpdates { get; set; } = true;
+
+    public static string InstallerPath => Path.Combine(AppContext.BaseDirectory, "openshape-installer");
+
+    /// <summary>Ask the bundled installer (OpenShape Client Downloader) whether a newer release exists.</summary>
+    public async Task CheckUpdatesAsync()
+    {
+        if (!CheckForUpdates || !File.Exists(InstallerPath)) return;
+        var line = await Task.Run(() =>
+        {
+            try
+            {
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(InstallerPath, "--check") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false });
+                if (p == null) return null;
+                var o = p.StandardOutput.ReadToEnd();
+                p.WaitForExit(30000);
+                return p.ExitCode == 0 ? o.Trim() : null;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        });
+        if (line != null) ApplyUpdateCheck(line);
+    }
+
+    /// <summary>Parse the installer's "--check" line and light the bell when an update exists.</summary>
+    public void ApplyUpdateCheck(string line)
+    {
+        if (!line.Contains("update=True")) return;
+        var latest = line.Split(' ').FirstOrDefault(x => x.StartsWith("latest="))?[7..];
+        _updateInfo = $"OpenShape CAD {latest}을(를) 설치할 수 있습니다.";
+        _bellDot.IsVisible = true;
+        if (_bell != null) ToolTip.SetTip(_bell, "알림 센터 (업데이트 있음)");
+    }
+
+    private void ShowNotifications()
+    {
+        var p = new CommandPanel("알림 센터", null, null, CancelCommand);
+        p.AddText(_updateInfo ?? "새 알림이 없습니다. OpenShape CAD가 최신 버전입니다.");
+        var run = new FlatButton { Height = 30, Normal = _updateInfo != null ? Ui.Accent : Ui.Brush("#EDEDED"), Child = Ui.Centered(Ui.Label(_updateInfo != null ? "업데이트" : "업데이트 확인 / 다시 설치", 12, _updateInfo != null ? Brushes.White : Ui.Text)) }.Init();
+        run.Click += () =>
+        {
+            CancelCommand();
+            if (File.Exists(InstallerPath))
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(InstallerPath) { UseShellExecute = false });
+        };
+        p.AddControl(run);
+        CancelCommand();
+        _cmd = new CommandSession { Id = "notifications", Panel = p };
+        ShowDialog(p);
+    }
 
     private static string ShortcutHelp() =>
         "키보드 단축키 (Fusion 기본값과 같음)\n" +

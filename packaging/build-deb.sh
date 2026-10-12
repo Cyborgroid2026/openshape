@@ -2,7 +2,7 @@
 # Build the Rust engine and the self-contained C# app, run the tests, then package a .deb.
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION=1.0.1
+VERSION=1.1.0
 ARCH=amd64
 PKG=openshape_${VERSION}_${ARCH}
 STAGE="$ROOT/build/$PKG"
@@ -29,6 +29,11 @@ dotnet publish "$ROOT/app/OpenShape.csproj" -c Release -r linux-x64 --self-conta
 "$STAGE/opt/openshape/openshape" --export-icon "$STAGE/opt/openshape/openshape.png"
 cp "$STAGE/opt/openshape/openshape.png" "$STAGE/usr/share/icons/hicolor/256x256/apps/openshape.png"
 ln -s ../../opt/openshape/openshape "$STAGE/usr/bin/openshape"
+# streaming installer / updater (same role as Autodesk's "Fusion Client Downloader")
+dotnet publish "$ROOT/installer/Installer.csproj" -c Release -r linux-x64 --self-contained true \
+    -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true \
+    -p:DebugType=none -o "$ROOT/build/installer"
+install -m 755 "$ROOT/build/installer/openshape-installer" "$STAGE/opt/openshape/openshape-installer"
 install -m 755 "$ROOT/packaging/replace-fusion-shortcuts.sh" "$STAGE/opt/openshape/replace-fusion-shortcuts.sh"
 
 cat > "$STAGE/usr/share/applications/openshape.desktop" <<DESKTOP
@@ -45,6 +50,19 @@ Terminal=false
 Categories=Graphics;3DGraphics;Engineering;
 MimeType=application/x-openshape-design;
 StartupWMClass=openshape
+DESKTOP
+
+cat > "$STAGE/usr/share/applications/openshape-update.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=OpenShape CAD Update
+Name[ko]=OpenShape CAD 업데이트
+Comment=Download and install the latest OpenShape CAD
+Comment[ko]=최신 OpenShape CAD를 내려받아 설치합니다
+Exec=/opt/openshape/openshape-installer
+Icon=openshape
+Terminal=false
+Categories=Graphics;Settings;
 DESKTOP
 
 cat > "$STAGE/usr/share/mime/packages/openshape.xml" <<MIME
@@ -96,4 +114,5 @@ chmod 755 "$STAGE/DEBIAN/postinst"
 chmod -R u+rwX,go+rX,go-w "$STAGE"
 mkdir -p "$ROOT/dist"
 dpkg-deb --root-owner-group --build "$STAGE" "$ROOT/dist/$PKG.deb"
-echo "built: $ROOT/dist/$PKG.deb"
+install -m 755 "$ROOT/build/installer/openshape-installer" "$ROOT/dist/OpenShape-Client-Downloader"
+echo "built: $ROOT/dist/$PKG.deb and $ROOT/dist/OpenShape-Client-Downloader"
