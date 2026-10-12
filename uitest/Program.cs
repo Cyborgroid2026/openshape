@@ -59,7 +59,7 @@ Point Center(Control c) => c.TranslatePoint(new Point(c.Bounds.Width / 2, c.Boun
 Point Text(string text) => Center(w.GetVisualDescendants().OfType<TextBlock>().Where(x => x.Text == text && x.IsEffectivelyVisible).LastOrDefault()
                                   ?? throw new Exception($"text not found: {text}"));
 
-Point Tip(string tip) => Center(w.GetVisualDescendants().OfType<Control>().Where(x => ToolTip.GetTip(x) as string == tip && x.IsEffectivelyVisible).LastOrDefault()
+Point Tip(string tip) => Center(w.GetVisualDescendants().OfType<Control>().Where(x => ToolTip.GetTip(x) is string t && (t == tip || t.StartsWith(tip + " (")) && x.IsEffectivelyVisible).LastOrDefault()
                                 ?? throw new Exception($"tooltip not found: {tip}"));
 
 void Click(Point p)
@@ -104,6 +104,7 @@ double Volume() => w.State.Bodies.Sum(b => b.Solid.Info.Volume);
 bool Near(double a, double b, double rel = 0.015) => Math.Abs(a - b) <= rel * Math.Abs(b);
 
 if (Environment.GetEnvironmentVariable("OSC_JUMP") == "sketchtools") goto SketchTools;
+if (Environment.GetEnvironmentVariable("OSC_JUMP") == "shortcuts") goto Shortcuts;
 Shot("start");
 Check(w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "솔리드") && w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "브라우저"),
     "toolbar tabs and browser are shown");
@@ -796,6 +797,60 @@ if (Directory.Exists(Path.Combine(testExchange, "cloud", "XL_430_new")))
     Check(w.State.Bodies.Count > 20, "a Fusion cloud design opens from the data panel");
 }
 w.ToggleDataPanel();
+
+// ================= keyboard shortcuts =================
+Shortcuts:
+await Fresh("shortcuts");
+w.View.Focus();
+Key(Avalonia.Input.Key.L);
+Check(w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text?.StartsWith("스케치할 평면을 선택") == true && t.IsEffectivelyVisible), "L outside a sketch asks for a plane first");
+Click(Text("XY"));
+Pump();
+Check(w.InSketch && w.Sketch!.Tool == "line", "…then starts the line tool on the chosen plane");
+Key(Avalonia.Input.Key.R);
+Check(w.Sketch!.Tool == "rect", "R switches to the rectangle tool");
+w.View.Cam.Distance = 200;
+w.View.Invalidate3D();
+Pump();
+Click(SketchPt(-10, -10));
+Click(SketchPt(10, 10));
+Key(Avalonia.Input.Key.D);
+Check(w.Sketch!.Tool == "dimension", "D is the sketch dimension tool");
+Key(Avalonia.Input.Key.E);
+Pump();
+Check(!w.InSketch && w.Command?.Id == "extrude", "E inside a sketch finishes it and starts extrude");
+Key(Avalonia.Input.Key.Escape);
+Key(Avalonia.Input.Key.S);
+Pump();
+Check(w.ShortcutBoxOpen, "S opens the command search box");
+var sbox = w.GetVisualDescendants().OfType<TextBox>().First(t => t.Tag as string == "shortcutbox");
+sbox.Text = "모깎";
+Pump();
+sbox.Focus();
+w.KeyPress(Avalonia.Input.Key.Enter, RawInputModifiers.None, PhysicalKey.None, null);
+w.KeyRelease(Avalonia.Input.Key.Enter, RawInputModifiers.None, PhysicalKey.None, null);
+Pump();
+Check(!w.ShortcutBoxOpen && w.Command?.Id == "fillet", "typing '모깎' and Enter runs fillet");
+Key(Avalonia.Input.Key.Escape);
+Box(10, 10, 10, 50);
+Click(Text(w.BodyName(w.State.Bodies.Last().Id)));
+w.View.Focus();
+Key(Avalonia.Input.Key.V);
+Check(w.Document.HiddenBodies.Contains(w.State.Bodies.Last().Id), "V hides the selected body");
+Key(Avalonia.Input.Key.V);
+w.KeyPress(Avalonia.Input.Key.C, RawInputModifiers.Control, PhysicalKey.None, null);
+w.KeyRelease(Avalonia.Input.Key.C, RawInputModifiers.Control, PhysicalKey.None, null);
+w.KeyPress(Avalonia.Input.Key.V, RawInputModifiers.Control, PhysicalKey.None, null);
+w.KeyRelease(Avalonia.Input.Key.V, RawInputModifiers.Control, PhysicalKey.None, null);
+Pump();
+Check(w.Command?.Draft is MoveFeature { CreateCopy: true, Bodies.Count: 1 }, "Ctrl+C / Ctrl+V opens Move/Copy with a copy of the body");
+SetField("X 거리", "30");
+w.RefreshPreview();
+Click(Text("확인"));
+Check(w.State.Bodies.Count == 2, "the pasted copy is a new body");
+Key(Avalonia.Input.Key.I);
+Check(w.Command?.Id == "measure", "I opens measure");
+Key(Avalonia.Input.Key.Escape);
 
 Console.WriteLine(failures.Count == 0 ? "ALL PASSED" : $"{failures.Count} FAILED");
 return failures.Count == 0 ? 0 : 1;

@@ -567,6 +567,11 @@ public sealed partial class MainWindow
         var baseState = Eval(_doc.Features, editIndex >= 0 ? editIndex : _doc.Marker);
         _sk = new SketchSession { Draft = draft, EditIndex = editIndex, Base = baseState };
         SolveSketch();
+        if (_pendingSketchTool is { } tool)
+        {
+            _pendingSketchTool = null;
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => RunCommand(tool));
+        }
         _preview = baseState;
         _selBodies.Clear();
         _selProfiles.Clear();

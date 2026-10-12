@@ -1126,12 +1126,13 @@ public sealed partial class MainWindow
         bool ctrl = e.KeyModifiers.HasFlag(KeyModifiers.Control);
         switch (e.Key)
         {
-            case Key.Z when ctrl: Undo(); break;
+            case Key.Z when ctrl && !e.KeyModifiers.HasFlag(KeyModifiers.Shift): Undo(); break;
             case Key.Y when ctrl: Redo(); break;
-            case Key.S when ctrl: _ = Save(); break;
+            case Key.S when ctrl && !e.KeyModifiers.HasFlag(KeyModifiers.Shift): _ = Save(); break;
             case Key.O when ctrl: _ = OpenFile(); break;
             case Key.N when ctrl: _ = NewDesign(); break;
             case Key.Escape:
+                if (_pickPlane) _pendingSketchTool = null;
                 if (_sk != null)
                 {
                     if (_sk.Pts.Count > 0) { _sk.Pts.Clear(); _sk.ChainStart = null; }
@@ -1159,14 +1160,9 @@ public sealed partial class MainWindow
                 }
                 else if (_sk == null && _cmd == null && _selBodies.Count > 0) RunCommand("delete");
                 break;
-            case Key.L when !ctrl && _sk != null: RunCommand("line"); break;
-            case Key.R when !ctrl && _sk != null: RunCommand("rect"); break;
-            case Key.C when !ctrl && _sk != null: RunCommand("circle"); break;
-            case Key.D when !ctrl && _sk != null: RunCommand("dimension"); break;
-            case Key.E when !ctrl && _sk == null && _cmd == null: RunCommand("extrude"); break;
-            case Key.M when !ctrl && _sk == null && _cmd == null: RunCommand("move"); break;
-            case Key.F6: FitAll(); break;
-            default: return;
+            default:
+                if (!HandleShortcut(e)) return;
+                break;
         }
         e.Handled = true;
     }

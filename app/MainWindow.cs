@@ -455,7 +455,7 @@ public sealed partial class MainWindow : Window
             var tid = id;
             var b = new FlatButton { Width = 40, Height = 40, Child = Ui.Centered(Icons.Color(id, 30)) }.Init();
             b.IsEnabled = !Unsupported.Contains(id);
-            ToolTip.SetTip(b, Unsupported.Contains(id) ? $"{ToolNames[id]} (지원하지 않음)" : ToolNames.GetValueOrDefault(id, id));
+            ToolTip.SetTip(b, Unsupported.Contains(id) ? $"{ToolNames[id]} (지원하지 않음)" : WithKey(id, ToolNames.GetValueOrDefault(id, id)));
             b.Click += () => RunCommand(tid);
             icons.Children.Add(b);
         }
@@ -476,7 +476,13 @@ public sealed partial class MainWindow : Window
         {
             if (id == "-") { flyout.Items.Add(new Separator()); continue; }
             var tid = id;
-            var mi = new MenuItem { Header = ToolNames.GetValueOrDefault(id, id), Icon = Icons.Color(id, 18), IsEnabled = !Unsupported.Contains(id) };
+            var mi = new MenuItem
+            {
+                Header = ToolNames.GetValueOrDefault(id, id),
+                Icon = Icons.Color(id, 18),
+                IsEnabled = !Unsupported.Contains(id),
+                InputGesture = ShortcutLabels.TryGetValue(id, out var key) && key.Length == 1 ? new KeyGesture(Enum.Parse<Key>(key)) : null,
+            };
             mi.Click += (_, _) => RunCommand(tid);
             flyout.Items.Add(mi);
         }
@@ -1126,10 +1132,11 @@ public sealed partial class MainWindow : Window
     private void ShowAbout()
     {
         var panel = new CommandPanel("정보", null, () => CloseDialog(), null);
-        panel.AddText("OpenShape CAD 1.0.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
+        panel.AddText("OpenShape CAD 1.0.1\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
                       "Autodesk의 코드나 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다.\n\n" +
                       "Fusion IsaacSimLink 애드인의 기능(형상·로봇 보내기, 저장 시 자동 동기화)이 내장되어 있고, Fusion 클라우드 디자인은 데이터 패널에서 열 수 있습니다. " +
                       ".f3d 파일은 Autodesk 클라우드(APS)에서 STEP으로 변환해 엽니다.");
+        panel.AddText(ShortcutHelp());
         ShowDialog(panel);
     }
 }
