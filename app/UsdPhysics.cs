@@ -25,6 +25,33 @@ public static class UsdPhysics
         return u;
     }
 
+    /// <summary>Quaternion (w, x, y, z) of the frame whose X is the joint axis and Y the in-plane direction.</summary>
+    private static (double w, double x, double y, double z) Frame(V3 axis, V3 u)
+    {
+        var x = axis.Norm();
+        var y = (u - x * u.Dot(x)).Norm();
+        var z = x.Cross(y);
+        double m00 = x.X, m01 = y.X, m02 = z.X, m10 = x.Y, m11 = y.Y, m12 = z.Y, m20 = x.Z, m21 = y.Z, m22 = z.Z;
+        double tr = m00 + m11 + m22;
+        if (tr > 0)
+        {
+            double s = Math.Sqrt(tr + 1) * 2;
+            return (0.25 * s, (m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s);
+        }
+        if (m00 > m11 && m00 > m22)
+        {
+            double s = Math.Sqrt(1 + m00 - m11 - m22) * 2;
+            return ((m21 - m12) / s, 0.25 * s, (m01 + m10) / s, (m02 + m20) / s);
+        }
+        if (m11 > m22)
+        {
+            double s = Math.Sqrt(1 + m11 - m00 - m22) * 2;
+            return ((m02 - m20) / s, (m01 + m10) / s, 0.25 * s, (m12 + m21) / s);
+        }
+        double t = Math.Sqrt(1 + m22 - m00 - m11) * 2;
+        return ((m10 - m01) / t, (m02 + m20) / t, (m12 + m21) / t, 0.25 * t);
+    }
+
     /// <summary>Quaternion (w, x, y, z) turning +X onto <paramref name="axis"/>.</summary>
     private static (double w, double x, double y, double z) XTo(V3 axis)
     {
@@ -107,15 +134,32 @@ public static class UsdPhysics
             var b0 = j.Fixed.Select(id => groupPrim.GetValueOrDefault(id)).FirstOrDefault(p => p != null);
             var b1 = j.Moving.Select(id => groupPrim.GetValueOrDefault(id)).FirstOrDefault(p => p != null);
             if (b0 == null || b1 == null || b0 == b1) continue;
-            string type = j.Type switch { "slider" => "PhysicsPrismaticJoint", "rigid" => "PhysicsFixedJoint", _ => "PhysicsRevoluteJoint" };
-            var q = XTo(j.Axis);
-            o.Append($"    def {type} \"{Ident(j.Name, used, "Joint")}\"\n    {{\n");
+            string type = j.Type switch
+            {
+                "slider" => "PhysicsPrismaticJoint",
+                "rigid" => "PhysicsFixedJoint",
+                "ball" => "PhysicsSphericalJoint",
+                "revolute" => "PhysicsRevoluteJoint",
+                _ => "PhysicsJoint",   // cylindrical, pin-slot, planar: a D6 joint with locked axes
+            };
+            var q = Frame(j.Axis, j.U);
+            // D6 limits: X = joint axis, Y = in-plane U, Z = V; low > high locks that degree of freedom
+            string[] locked = j.Type switch
+            {
+                "cylindrical" => new[] { "transY", "transZ", "rotY", "rotZ" },
+                "pinslot" => new[] { "transX", "transZ", "rotY", "rotZ" },
+                "planar" => new[] { "transX", "rotY", "rotZ" },
+                _ => Array.Empty<string>(),
+            };
+            var schemas = locked.Length > 0 ? $" (\n        prepend apiSchemas = [{string.Join(", ", locked.Select(l => $"\"PhysicsLimitAPI:{l}\""))}]\n    )" : "";
+            o.Append($"    def {type} \"{Ident(j.Name, used, "Joint")}\"{schemas}\n    {{\n");
+            foreach (var l in locked) o.Append($"        float limit:{l}:physics:low = 1\n        float limit:{l}:physics:high = -1\n");
             o.Append($"        rel physics:body0 = <{b0}>\n        rel physics:body1 = <{b1}>\n");
             o.Append($"        point3f physics:localPos0 = ({F(j.Origin.X)}, {F(j.Origin.Y)}, {F(j.Origin.Z)})\n");
             o.Append($"        point3f physics:localPos1 = ({F(j.Origin.X)}, {F(j.Origin.Y)}, {F(j.Origin.Z)})\n");
             o.Append($"        quatf physics:localRot0 = ({F(q.w)}, {F(q.x)}, {F(q.y)}, {F(q.z)})\n");
             o.Append($"        quatf physics:localRot1 = ({F(q.w)}, {F(q.x)}, {F(q.y)}, {F(q.z)})\n");
-            if (type != "PhysicsFixedJoint")
+            if (type is "PhysicsRevoluteJoint" or "PhysicsPrismaticJoint" or "PhysicsSphericalJoint")
             {
                 o.Append("        uniform token physics:axis = \"X\"\n");
                 if (j.Lower is { } lo) o.Append($"        float physics:lowerLimit = {F(lo)}\n");

@@ -663,6 +663,24 @@ API int ok_info(uint32_t h, double* out) {
     }
 }
 
+/// Mass properties with unit density: [volume, cx, cy, cz, Ixx, Iyy, Izz, Ixy, Iyz, Ixz] where the
+/// inertia tensor is about the centre of mass (multiply by density to get mass units).
+API int ok_mass(uint32_t h, double* out) {
+    TopoDS_Shape s;
+    if (!get(h, s)) return 0;
+    try {
+        GProp_GProps g;
+        BRepGProp::VolumeProperties(s, g);
+        gp_Pnt c = g.CentreOfMass();
+        gp_Mat m = g.MatrixOfInertia();
+        double r[10] = {g.Mass(), c.X(), c.Y(), c.Z(), m(1, 1), m(2, 2), m(3, 3), m(1, 2), m(2, 3), m(1, 3)};
+        std::memcpy(out, r, sizeof r);
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
 // ------------------------------------------------------------------- display data
 
 /// Triangulate; returns the triangle count. Fetch with ok_mesh_copy.
@@ -983,6 +1001,8 @@ API int ok_solve(double* params, int nparams, const int32_t* pts, int npts, cons
             case 11: type = SLVS_C_PT_ON_LINE; break;
             case 12: type = SLVS_C_PT_ON_CIRCLE; break;
             case 13: type = SLVS_C_AT_MIDPOINT; break;
+            case 14: type = SLVS_C_PT_LINE_DISTANCE; break;
+            case 15: type = SLVS_C_SYMMETRIC_LINE; break;
             default: continue;
         }
         C.push_back(Slvs_MakeConstraint(i + 1, g2, type, wp, c[1], pt(c[2]), pt(c[3]), en(c[4]), en(c[5])));

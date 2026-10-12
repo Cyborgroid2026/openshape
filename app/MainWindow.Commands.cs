@@ -38,7 +38,13 @@ public sealed partial class MainWindow
         {
             switch (id)
             {
-                case "dimension" or "c_hv" or "c_coincident" or "c_parallel" or "c_perpendicular" or "c_equal" or "c_fix" or "c_midpoint" or "c_concentric":
+                case "trim":
+                    _sk.Tool = "trim";
+                    _sk.Pts.Clear();
+                    _sk.Selected = -1;
+                    SetPrompt("잘라낼 곡선 부분을 클릭하세요. 다른 곡선과 만나는 점 사이가 지워집니다.");
+                    break;
+                case "dimension" or "c_hv" or "c_coincident" or "c_parallel" or "c_perpendicular" or "c_equal" or "c_fix" or "c_midpoint" or "c_concentric" or "c_tangent" or "c_symmetric":
                     _sk.Tool = id;
                     _sk.Pts.Clear();
                     _sk.Picks.Clear();
@@ -52,6 +58,8 @@ public sealed partial class MainWindow
                         "c_midpoint" => "점과 선을 차례로 클릭하세요.",
                         "c_coincident" => "두 점(또는 점과 선)을 차례로 클릭하세요.",
                         "c_concentric" => "두 원을 차례로 클릭하세요.",
+                        "c_tangent" => "선과 원(또는 두 원)을 차례로 클릭하세요.",
+                        "c_symmetric" => "두 점과 대칭선을 차례로 클릭하세요.",
                         _ => "두 개체를 차례로 클릭하세요.",
                     });
                     break;
@@ -184,6 +192,21 @@ public sealed partial class MainWindow
             case "section":
                 ShowSection();
                 break;
+            case "parameters":
+                ShowParameters();
+                break;
+            case "flatpattern":
+                ShowFlatPattern();
+                break;
+            case "isaac_cad" or "isaac_robot" or "isaac_status":
+                _ = RunIsaac(id);
+                break;
+            case "isaac_auto":
+                IsaacLink.AutoSync = !IsaacLink.AutoSync;
+                ShowIsaacResult(IsaacLink.AutoSync
+                    ? $"저장할 때 자동으로 Isaac Sim에 보냅니다 (이 디자인: {(IsaacLink.LastMode(DesignName) == "robot" ? "로봇" : "형상")})."
+                    : "자동 동기화를 껐습니다.", false);
+                break;
             case "fillet" or "chamfer":
                 OpenCommand(new FilletFeature { Name = _doc.NextName(id), Chamfer = id == "chamfer", Size = id == "chamfer" ? 1 : 2 }, -1);
                 break;
@@ -301,8 +324,8 @@ public sealed partial class MainWindow
                 p.AddCombo("방향", new[] { "한쪽 방향", "두 방향", "대칭" }, ex.Direction switch { 2 => 1, 1 => 2, _ => 0 },
                     i => { ex.Direction = i switch { 1 => 2, 2 => 1, _ => 0 }; BuildCommandPanel(); Changed(); });
                 p.AddCombo("범위 유형", new[] { "거리" }, 0, _ => { });
-                p.AddNumber(ex.Direction == 2 ? "거리 - 측면 1" : "거리", ex.Distance, "mm", v => ex.Distance = v, Changed);
-                if (ex.Direction == 2) p.AddNumber("거리 - 측면 2", ex.Distance2, "mm", v => ex.Distance2 = v, Changed);
+                p.AddNumber(ex.Direction == 2 ? "거리 - 측면 1" : "거리", ex.Distance, "mm", v => ex.Distance = v, Changed, f, "Distance");
+                if (ex.Direction == 2) p.AddNumber("거리 - 측면 2", ex.Distance2, "mm", v => ex.Distance2 = v, Changed, f, "Distance2");
                 p.AddCombo("작업", OpNames, OpIndex(ex.Operation), i => { ex.Operation = OpOrder[i]; Changed(); });
                 break;
 
@@ -314,7 +337,7 @@ public sealed partial class MainWindow
                 if (sketch != null) axes.AddRange(sketch.Entities.Where(e => e.Kind == "line").Select((_, i) => $"스케치 선 {i + 1}"));
                 p.AddCombo("축", axes.ToArray(), Math.Min(rv.Axis, axes.Count - 1), i => { rv.Axis = i; Changed(); });
                 p.AddCombo("유형", new[] { "각도" }, 0, _ => { });
-                p.AddNumber("각도", rv.Angle, "deg", v => rv.Angle = v, Changed);
+                p.AddNumber("각도", rv.Angle, "deg", v => rv.Angle = v, Changed, f, "Angle");
                 p.AddCombo("작업", OpNames, OpIndex(rv.Operation), i => { rv.Operation = OpOrder[i]; Changed(); });
                 break;
             }
@@ -323,13 +346,13 @@ public sealed partial class MainWindow
                 switch (pr.Shape)
                 {
                     case "box":
-                        p.AddNumber("길이", pr.A, "mm", v => pr.A = v, Changed);
-                        p.AddNumber("너비", pr.B, "mm", v => pr.B = v, Changed);
-                        p.AddNumber("높이", pr.C, "mm", v => pr.C = v, Changed);
+                        p.AddNumber("길이", pr.A, "mm", v => pr.A = v, Changed, f, "A");
+                        p.AddNumber("너비", pr.B, "mm", v => pr.B = v, Changed, f, "B");
+                        p.AddNumber("높이", pr.C, "mm", v => pr.C = v, Changed, f, "C");
                         break;
                     case "cylinder":
                         p.AddNumber("지름", pr.A * 2, "mm", v => pr.A = v / 2, Changed);
-                        p.AddNumber("높이", pr.B, "mm", v => pr.B = v, Changed);
+                        p.AddNumber("높이", pr.B, "mm", v => pr.B = v, Changed, f, "B");
                         break;
                     case "sphere":
                         p.AddNumber("지름", pr.A * 2, "mm", v => pr.A = v / 2, Changed);
@@ -340,21 +363,21 @@ public sealed partial class MainWindow
                         break;
                 }
                 p.AddHeader("위치");
-                p.AddNumber("X", pr.X, "mm", v => pr.X = v, Changed);
-                p.AddNumber("Y", pr.Y, "mm", v => pr.Y = v, Changed);
-                p.AddNumber(pr.Shape == "sphere" || pr.Shape == "torus" ? "Z (중심)" : "Z (바닥)", pr.Z, "mm", v => pr.Z = v, Changed);
+                p.AddNumber("X", pr.X, "mm", v => pr.X = v, Changed, f, "X");
+                p.AddNumber("Y", pr.Y, "mm", v => pr.Y = v, Changed, f, "Y");
+                p.AddNumber(pr.Shape == "sphere" || pr.Shape == "torus" ? "Z (중심)" : "Z (바닥)", pr.Z, "mm", v => pr.Z = v, Changed, f, "Z");
                 p.AddCombo("작업", OpNames, OpIndex(pr.Operation), i => { pr.Operation = OpOrder[i]; Changed(); });
                 break;
 
             case MoveFeature mv:
                 Select("객체", "bodies", mv.Bodies.Count, "본체", () => mv.Bodies.Clear());
                 p.AddCombo("이동 유형", new[] { "자유 이동" }, 0, _ => { });
-                p.AddNumber("X 거리", mv.Tx, "mm", v => mv.Tx = v, Changed);
-                p.AddNumber("Y 거리", mv.Ty, "mm", v => mv.Ty = v, Changed);
-                p.AddNumber("Z 거리", mv.Tz, "mm", v => mv.Tz = v, Changed);
-                p.AddNumber("X 각도", mv.Rx, "deg", v => mv.Rx = v, Changed);
-                p.AddNumber("Y 각도", mv.Ry, "deg", v => mv.Ry = v, Changed);
-                p.AddNumber("Z 각도", mv.Rz, "deg", v => mv.Rz = v, Changed);
+                p.AddNumber("X 거리", mv.Tx, "mm", v => mv.Tx = v, Changed, f, "Tx");
+                p.AddNumber("Y 거리", mv.Ty, "mm", v => mv.Ty = v, Changed, f, "Ty");
+                p.AddNumber("Z 거리", mv.Tz, "mm", v => mv.Tz = v, Changed, f, "Tz");
+                p.AddNumber("X 각도", mv.Rx, "deg", v => mv.Rx = v, Changed, f, "Rx");
+                p.AddNumber("Y 각도", mv.Ry, "deg", v => mv.Ry = v, Changed, f, "Ry");
+                p.AddNumber("Z 각도", mv.Rz, "deg", v => mv.Rz = v, Changed, f, "Rz");
                 p.AddCheck("복사 작성", mv.CreateCopy, v => { mv.CreateCopy = v; Changed(); });
                 break;
 
@@ -369,18 +392,18 @@ public sealed partial class MainWindow
                 Select("객체", "bodies", pt.Bodies.Count, "본체", () => pt.Bodies.Clear());
                 p.AddCombo("축", new[] { "X축", "Y축", "Z축" }, pt.Axis switch { "X" => 0, "Y" => 1, _ => 2 }, i => { pt.Axis = new[] { "X", "Y", "Z" }[i]; Changed(); });
                 p.AddCombo("분산", new[] { "전체" }, 0, _ => { });
-                p.AddNumber("수량", pt.Count, "", v => pt.Count = (int)Math.Round(v), Changed);
-                p.AddNumber("전체 각도", pt.Angle, "deg", v => pt.Angle = v, Changed);
+                p.AddNumber("수량", pt.Count, "", v => pt.Count = (int)Math.Round(v), Changed, f, "Count");
+                p.AddNumber("전체 각도", pt.Angle, "deg", v => pt.Angle = v, Changed, f, "Angle");
                 break;
 
             case PatternFeature pt:
                 Select("객체", "bodies", pt.Bodies.Count, "본체", () => pt.Bodies.Clear());
                 p.AddCombo("방향 1", new[] { "X축", "Y축", "Z축" }, pt.Dir1 switch { "X" => 0, "Y" => 1, _ => 2 }, i => { pt.Dir1 = new[] { "X", "Y", "Z" }[i]; Changed(); });
-                p.AddNumber("수량", pt.Count1, "", v => pt.Count1 = (int)Math.Round(v), Changed);
-                p.AddNumber("간격", pt.Spacing1, "mm", v => pt.Spacing1 = v, Changed);
+                p.AddNumber("수량", pt.Count1, "", v => pt.Count1 = (int)Math.Round(v), Changed, f, "Count1");
+                p.AddNumber("간격", pt.Spacing1, "mm", v => pt.Spacing1 = v, Changed, f, "Spacing1");
                 p.AddCombo("방향 2", new[] { "X축", "Y축", "Z축" }, pt.Dir2 switch { "X" => 0, "Y" => 1, _ => 2 }, i => { pt.Dir2 = new[] { "X", "Y", "Z" }[i]; Changed(); });
-                p.AddNumber("수량 2", pt.Count2, "", v => pt.Count2 = (int)Math.Round(v), Changed);
-                p.AddNumber("간격 2", pt.Spacing2, "mm", v => pt.Spacing2 = v, Changed);
+                p.AddNumber("수량 2", pt.Count2, "", v => pt.Count2 = (int)Math.Round(v), Changed, f, "Count2");
+                p.AddNumber("간격 2", pt.Spacing2, "mm", v => pt.Spacing2 = v, Changed, f, "Spacing2");
                 break;
 
             case CombineFeature cb:
@@ -394,7 +417,7 @@ public sealed partial class MainWindow
             case ScaleFeature sc:
                 Select("객체", "bodies", sc.Bodies.Count, "본체", () => sc.Bodies.Clear());
                 p.AddCombo("축척 유형", new[] { "균일" }, 0, _ => { });
-                p.AddNumber("축척 계수", sc.Factor, "", v => sc.Factor = v, Changed);
+                p.AddNumber("축척 계수", sc.Factor, "", v => sc.Factor = v, Changed, f, "Factor");
                 break;
 
             case LoftFeature lf:
@@ -411,45 +434,45 @@ public sealed partial class MainWindow
 
             case SurfaceFeature sf:
                 Select(sf.Patch ? "경계" : "프로파일", "chains", sf.Chains.Count, "곡선", () => sf.Chains.Clear());
-                if (!sf.Patch) p.AddNumber("거리", sf.Distance, "mm", v => sf.Distance = v, Changed);
+                if (!sf.Patch) p.AddNumber("거리", sf.Distance, "mm", v => sf.Distance = v, Changed, f, "Distance");
                 break;
 
             case ThickenFeature th:
                 Select("면", "bodies", th.Bodies.Count, "곡면 본체", () => th.Bodies.Clear());
-                p.AddNumber("두께", th.Thickness, "mm", v => th.Thickness = v, Changed);
+                p.AddNumber("두께", th.Thickness, "mm", v => th.Thickness = v, Changed, f, "Thickness");
                 break;
 
             case PressPullFeature pp:
                 Select("면", "face1", pp.Pick.Length == 3 ? 1 : 0, "면", () => { pp.Pick = Array.Empty<double>(); pp.Body = ""; });
-                p.AddNumber("거리", pp.Distance, "mm", v => pp.Distance = v, Changed);
+                p.AddNumber("거리", pp.Distance, "mm", v => pp.Distance = v, Changed, f, "Distance");
                 break;
 
             case FlangeFeature { Edge: false } fl:
                 Select("프로파일", "profiles", fl.Profiles.Count, "프로파일", () => fl.Profiles.Clear());
-                p.AddNumber("두께", fl.Thickness, "mm", v => fl.Thickness = v, Changed);
+                p.AddNumber("두께", fl.Thickness, "mm", v => fl.Thickness = v, Changed, f, "Thickness");
                 break;
 
             case FlangeFeature fl:
                 Select("모서리", "edge1", fl.Pick.Length == 3 ? 1 : 0, "모서리", () => { fl.Pick = Array.Empty<double>(); fl.Body = ""; });
-                p.AddNumber("높이", fl.Height, "mm", v => fl.Height = v, Changed);
-                p.AddNumber("굽힘 반지름", fl.BendRadius, "mm", v => fl.BendRadius = v, Changed);
-                p.AddNumber("두께", fl.Thickness, "mm", v => fl.Thickness = v, Changed);
+                p.AddNumber("높이", fl.Height, "mm", v => fl.Height = v, Changed, f, "Height");
+                p.AddNumber("굽힘 반지름", fl.BendRadius, "mm", v => fl.BendRadius = v, Changed, f, "BendRadius");
+                p.AddNumber("두께", fl.Thickness, "mm", v => fl.Thickness = v, Changed, f, "Thickness");
                 p.AddCombo("방향", new[] { "위", "아래" }, fl.Down ? 1 : 0, i => { fl.Down = i == 1; Changed(); });
                 p.AddInfo("펼친 길이", $"{fl.DevelopedLength:0.##} mm (K = 0.44)");
                 break;
 
             case RibFeature rb:
                 Select("곡선", "chains", rb.Chains.Count, "곡선", () => rb.Chains.Clear());
-                p.AddNumber("두께", rb.Thickness, "mm", v => rb.Thickness = v, Changed);
-                p.AddNumber("깊이", rb.Depth, "mm", v => rb.Depth = v, Changed);
+                p.AddNumber("두께", rb.Thickness, "mm", v => rb.Thickness = v, Changed, f, "Thickness");
+                p.AddNumber("깊이", rb.Depth, "mm", v => rb.Depth = v, Changed, f, "Depth");
                 p.AddCheck("방향 뒤집기", rb.Flip, v => { rb.Flip = v; Changed(); });
                 break;
 
             case BossFeature bo:
                 Select("위치", "face1", bo.Pick.Length == 3 ? 1 : 0, "점", () => { bo.Pick = Array.Empty<double>(); bo.Body = ""; });
-                p.AddNumber("지름", bo.Diameter, "mm", v => bo.Diameter = v, Changed);
-                p.AddNumber("구멍 지름", bo.HoleDiameter, "mm", v => bo.HoleDiameter = v, Changed);
-                p.AddNumber("높이", bo.Height, "mm", v => bo.Height = v, Changed);
+                p.AddNumber("지름", bo.Diameter, "mm", v => bo.Diameter = v, Changed, f, "Diameter");
+                p.AddNumber("구멍 지름", bo.HoleDiameter, "mm", v => bo.HoleDiameter = v, Changed, f, "HoleDiameter");
+                p.AddNumber("높이", bo.Height, "mm", v => bo.Height = v, Changed, f, "Height");
                 break;
 
             case JointFeature jt:
@@ -457,11 +480,25 @@ public sealed partial class MainWindow
                 Select("구성요소 1", "jointA", jt.PickA.Length == 3 ? 1 : 0, "원점", () => { jt.PickA = Array.Empty<double>(); jt.BodyA = ""; });
                 Select("구성요소 2", "jointB", jt.PickB.Length == 3 ? 1 : 0, "원점", () => { jt.PickB = Array.Empty<double>(); jt.BodyB = ""; });
                 p.AddHeader("동작");
-                var types = new[] { "rigid", "revolute", "slider", "cylindrical" };
+                var types = JointFeature.Types;
                 p.AddCombo("유형", types.Select(JointFeature.TypeName).ToArray(), Math.Max(0, Array.IndexOf(types, jt.Type)), i => { jt.Type = types[i]; BuildCommandPanel(); Changed(); });
-                if (jt.Type is "revolute" or "cylindrical" or "rigid") p.AddNumber("각도", jt.Angle, "deg", v => jt.Angle = v, Changed);
-                if (jt.Type is "slider" or "cylindrical") p.AddNumber("거리", jt.Distance, "mm", v => jt.Distance = v, Changed);
-                p.AddNumber("간격띄우기", jt.Offset, "mm", v => jt.Offset = v, Changed);
+                if (jt.Type != "slider") p.AddNumber(jt.Type == "ball" ? "피치(축 회전)" : "각도", jt.Angle, "deg", v => jt.Angle = v, Changed, f, "Angle");
+                if (jt.Type == "ball")
+                {
+                    p.AddNumber("요", jt.Angle2, "deg", v => jt.Angle2 = v, Changed, f, "Angle2");
+                    p.AddNumber("롤", jt.Angle3, "deg", v => jt.Angle3 = v, Changed, f, "Angle3");
+                }
+                if (jt.Type is "slider" or "cylindrical" or "pinslot" or "planar") p.AddNumber(jt.Type == "planar" ? "X 거리" : jt.Type == "pinslot" ? "슬롯 거리" : "거리", jt.Distance, "mm", v => jt.Distance = v, Changed, f, "Distance");
+                if (jt.Type == "planar") p.AddNumber("Y 거리", jt.Distance2, "mm", v => jt.Distance2 = v, Changed, f, "Distance2");
+                if (jt.Type is "revolute" or "slider")
+                {
+                    string unit = jt.Type == "slider" ? "mm" : "deg";
+                    p.AddCheck("최소 한계", jt.LowerLimit != null, v => { jt.LowerLimit = v ? (jt.Type == "slider" ? 0 : -90) : null; BuildCommandPanel(); });
+                    if (jt.LowerLimit is { } lo) p.AddNumber("최소", lo, unit, v => jt.LowerLimit = v);
+                    p.AddCheck("최대 한계", jt.UpperLimit != null, v => { jt.UpperLimit = v ? (jt.Type == "slider" ? 50 : 90) : null; BuildCommandPanel(); });
+                    if (jt.UpperLimit is { } hi) p.AddNumber("최대", hi, unit, v => jt.UpperLimit = v);
+                }
+                p.AddNumber("간격띄우기", jt.Offset, "mm", v => jt.Offset = v, Changed, f, "Offset");
                 p.AddCheck("뒤집기", jt.Flip, v => { jt.Flip = v; Changed(); });
                 break;
 
@@ -469,12 +506,12 @@ public sealed partial class MainWindow
                 p.AddInfo("유형", fl.Chamfer ? "모따기 - 동일 거리" : "모깎기 - 일정 반지름");
                 Select("모서리", "edges", fl.Edges.Count, "모서리", () => { fl.Edges.Clear(); fl.Body = ""; });
                 p.AddCheck("모든 모서리", fl.AllEdges, v => { fl.AllEdges = v; if (v && fl.Body == "" && c.Base!.Bodies.Count > 0) fl.Body = c.Base.Bodies[^1].Id; Changed(); });
-                p.AddNumber(fl.Chamfer ? "거리" : "반지름", fl.Size, "mm", v => fl.Size = v, Changed);
+                p.AddNumber(fl.Chamfer ? "거리" : "반지름", fl.Size, "mm", v => fl.Size = v, Changed, f, "Size");
                 break;
 
             case ShellFeature sh:
                 Select("면/본체", "faces", sh.Faces.Count, "면", () => { sh.Faces.Clear(); sh.Body = ""; });
-                p.AddNumber(sh.Outside ? "외부 두께" : "내부 두께", sh.Thickness, "mm", v => sh.Thickness = v, Changed);
+                p.AddNumber(sh.Outside ? "외부 두께" : "내부 두께", sh.Thickness, "mm", v => sh.Thickness = v, Changed, f, "Thickness");
                 p.AddCombo("방향", new[] { "내부", "외부" }, sh.Outside ? 1 : 0, i => { sh.Outside = i == 1; BuildCommandPanel(); Changed(); });
                 break;
 
@@ -552,6 +589,7 @@ public sealed partial class MainWindow
     {
         if (_cmd == null) return;
         _cmd = null;
+        _flatView = null;
         _previewTimer.Stop();
         _preview = null;
         CloseDialog();
@@ -613,6 +651,170 @@ public sealed partial class MainWindow
         }
         BuildCommandPanel();
         RefreshPreview();
+    }
+
+    /// <summary>"매개변수 변경": user parameters, plus the model fields that use them.</summary>
+    private void ShowParameters()
+    {
+        CancelCommand();
+        _cmd = new CommandSession { Id = "parameters" };
+        var rows = _doc.Parameters.Select(p => new UserParameter { Name = p.Name, Expression = p.Expression, Unit = p.Unit, Comment = p.Comment }).ToList();
+        void Build()
+        {
+            var p = new CommandPanel("매개변수", "parameters", () =>
+            {
+                var bad = rows.FirstOrDefault(r => string.IsNullOrWhiteSpace(r.Name) || !System.Text.RegularExpressions.Regex.IsMatch(r.Name, @"^[A-Za-z_가-힣][A-Za-z0-9_가-힣]*$"));
+                if (bad != null) { _cmd?.Panel?.SetError($"이름이 올바르지 않습니다: '{bad.Name}'"); return; }
+                var values = Params.Compute(rows);
+                var unresolved = rows.FirstOrDefault(r => !values.ContainsKey(r.Name));
+                if (unresolved != null) { _cmd?.Panel?.SetError($"식을 계산할 수 없습니다: {unresolved.Name} = {unresolved.Expression}"); return; }
+                Commit(() => _doc.Parameters = rows);
+                CancelCommand();
+            }, CancelCommand);
+            p.AddHeader("사용자 매개변수");
+            var values = Params.Compute(rows);
+            for (int i = 0; i < rows.Count; i++)
+            {
+                var r = rows[i];
+                var g = new Grid { ColumnDefinitions = new ColumnDefinitions("90,*,70,24"), Height = 28 };
+                var name = new TextBox { Text = r.Name, Height = 26, MinHeight = 0, Padding = new Thickness(4, 2), FontSize = 12, Tag = $"이름{i + 1}" };
+                name.TextChanged += (_, _) => r.Name = (name.Text ?? "").Trim();
+                var expr = new TextBox { Text = r.Expression, Height = 26, MinHeight = 0, Padding = new Thickness(4, 2), FontSize = 12, Margin = new Thickness(4, 0), Tag = $"식{i + 1}" };
+                expr.TextChanged += (_, _) => r.Expression = expr.Text ?? "";
+                var val = Ui.Label(values.TryGetValue(r.Name, out var v) ? CommandPanel.Format(v, r.Unit) : "?", 12, Ui.Muted);
+                var del = new FlatButton { Width = 20, Height = 20, Child = Ui.Centered(Icons.Line("close", 10, Ui.Muted)) }.Init();
+                ToolTip.SetTip(del, "삭제");
+                del.Click += () => { rows.Remove(r); Build(); };
+                Grid.SetColumn(expr, 1);
+                Grid.SetColumn(val, 2);
+                Grid.SetColumn(del, 3);
+                g.Children.Add(name);
+                g.Children.Add(expr);
+                g.Children.Add(val);
+                g.Children.Add(del);
+                p.AddControl(g);
+            }
+            var add = new FlatButton
+            {
+                Height = 28,
+                Normal = Ui.Brush("#EDEDED"),
+                Child = Ui.Centered(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6, Children = { Icons.Line("plus", 12), Ui.Label("사용자 매개변수 추가", 12) } }),
+            }.Init();
+            add.Click += () =>
+            {
+                int n = 1;
+                while (rows.Any(r => r.Name == "d" + n)) n++;
+                rows.Add(new UserParameter { Name = "d" + n, Expression = "10 mm" });
+                Build();
+            };
+            p.AddControl(add);
+            var used = _doc.Features.SelectMany(f => f.Expressions.Select(e => $"{f.Name}.{e.Key} = {e.Value}"))
+                .Concat(_doc.Features.OfType<SketchFeature>().SelectMany(sk => sk.Constraints.Where(c => c.Expression != null).Select(c => $"{sk.Name} {SketchConstraint.DisplayName(c.Kind)} = {c.Expression}"))).ToList();
+            p.AddHeader("모형 매개변수");
+            p.AddText(used.Count == 0 ? "매개변수를 쓰는 값이 아직 없습니다. 대화상자의 숫자 칸에 매개변수 이름(예: d1 * 2)을 입력하면 연결됩니다." : string.Join("\n", used));
+            _cmd!.Panel = p;
+            ShowDialog(p);
+        }
+        Build();
+    }
+
+    /// <summary>Name used for exchange folders and Isaac Sim prims.</summary>
+    public string DesignName => IsaacLink.SafeName(_path != null ? Path.GetFileNameWithoutExtension(_path) : "untitled");
+
+    private void ShowIsaacResult(string text, bool busy)
+    {
+        var p = new CommandPanel("IsaacSimLink", "isaac_robot", null, CancelCommand);
+        p.AddText(text);
+        if (busy) p.AddText("잠시 기다려 주세요...");
+        _cmd = new CommandSession { Id = "isaac", Panel = p };
+        ShowDialog(p);
+    }
+
+    /// <summary>Send the design to Isaac Sim (or check the connection); runs off the UI thread.</summary>
+    public async Task<string> RunIsaac(string id)
+    {
+        CancelCommand();
+        string design = DesignName;
+        var state = State;
+        var doc = _doc;
+        Func<string, string> name = BodyName;
+        ShowIsaacResult(id switch { "isaac_robot" => "로봇(URDF)을 Isaac Sim으로 보내는 중", "isaac_cad" => "형상(STEP)을 Isaac Sim으로 보내는 중", _ => "Isaac Sim 연결을 확인하는 중" }, true);
+        string result;
+        try
+        {
+            result = await Task.Run(() => id switch
+            {
+                "isaac_robot" => IsaacLink.SendRobot(design, state, doc, name, out _),
+                "isaac_cad" => IsaacLink.SendCad(design, path => Solid.Export(state.Bodies.Where(b => !doc.HiddenBodies.Contains(b.Id)).Select(b => (name(b.Id), b.Solid)).ToList(), path, 3)),
+                _ => IsaacLink.Status(),
+            });
+        }
+        catch (Exception ex)
+        {
+            result = ex.Message;
+        }
+        if (_cmd?.Id == "isaac") ShowIsaacResult(result, false);
+        return result;
+    }
+
+    private (string body, Solid flat)? _flatView;
+
+    /// <summary>Flat pattern of a sheet metal body, or null if the body is not sheet metal.</summary>
+    public Solid? FlatPatternOf(string bodyId) =>
+        State.Sheets.TryGetValue(bodyId, out var sheet) ? FlatPattern.Build(sheet) : null;
+
+    public bool ExportDxf(string bodyId, string path)
+    {
+        if (!State.Sheets.TryGetValue(bodyId, out var sheet)) return false;
+        var dxf = FlatPattern.Dxf(FlatPattern.Build(sheet), sheet);
+        if (dxf.Length == 0) return false;
+        File.WriteAllText(path, dxf);
+        return true;
+    }
+
+    private void ShowFlatPattern()
+    {
+        CancelCommand();
+        var id = _selBodies.FirstOrDefault(State.Sheets.ContainsKey) ?? State.Sheets.Keys.FirstOrDefault(k => State.Find(k) != null);
+        var p = new CommandPanel("평면 패턴", "flatpattern", null, () => { _flatView = null; CancelCommand(); UpdateItems(); });
+        _cmd = new CommandSession { Id = "flatpattern", Panel = p };
+        if (id == null)
+        {
+            p.AddText("판금 본체가 없습니다. 판금 탭의 플랜지로 만든 본체를 선택하세요.");
+            ShowDialog(p);
+            return;
+        }
+        try
+        {
+            var flat = FlatPattern.Build(State.Sheets[id]);
+            _flatView = (id, flat);
+            var i = flat.Info;
+            var f = State.Sheets[id].Base[0].frame;
+            var corners = new[] { i.Min, i.Max }.Select(f.Project).ToList();
+            p.AddInfo("본체", BodyName(id));
+            p.AddInfo("두께", $"{State.Sheets[id].Thickness:0.###} mm");
+            p.AddInfo("펼친 크기", $"{Math.Abs(corners[1].X - corners[0].X):0.##} × {Math.Abs(corners[1].Y - corners[0].Y):0.##} mm");
+            p.AddInfo("플랜지", $"{State.Sheets[id].Flanges.Count}개 (K = 0.44)");
+            var dxf = new FlatButton { Height = 30, Normal = Ui.Brush("#EDEDED"), Child = Ui.Centered(Ui.Label("DXF로 내보내기...", 12)) }.Init();
+            dxf.Click += async () =>
+            {
+                var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+                {
+                    Title = "평면 패턴 DXF 내보내기",
+                    SuggestedFileName = BodyName(id) + "_flat.dxf",
+                    DefaultExtension = "dxf",
+                    FileTypeChoices = new[] { new FilePickerFileType("DXF") { Patterns = new[] { "*.dxf" } } },
+                });
+                if (file?.TryGetLocalPath() is { } path && !ExportDxf(id, path)) p.SetError("DXF를 쓸 수 없습니다.");
+            };
+            p.AddControl(dxf);
+            UpdateItems();
+        }
+        catch (Exception ex)
+        {
+            p.SetError(ex.Message);
+        }
+        ShowDialog(p);
     }
 
     private void ShowSheetRule()
@@ -887,7 +1089,7 @@ public sealed partial class MainWindow
     }
 
     /// <summary>Where Fusion cloud designs land as STEP (fusion-webviewer cloud sync), when present.</summary>
-    private static string CloudFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "fusion-webviewer", "exchange", "cloud");
+    private static string CloudFolder => Path.Combine(IsaacLink.Exchange, "cloud");
 
     private static readonly FilePickerFileType CadTypes = new("CAD 파일 (STEP, IGES)") { Patterns = new[] { "*.step", "*.stp", "*.STEP", "*.STP", "*.iges", "*.igs" } };
     private static readonly FilePickerFileType MeshTypes = new("메쉬 (STL, OBJ)") { Patterns = new[] { "*.stl", "*.STL", "*.obj" } };
@@ -972,7 +1174,129 @@ public sealed partial class MainWindow
     // ------------------------------------------------------------ files
 
     private static readonly FilePickerFileType ProjectType = new("OpenShape CAD 디자인") { Patterns = new[] { "*.osc" } };
-    private static readonly FilePickerFileType AnyType = new("열 수 있는 모든 파일") { Patterns = new[] { "*.osc", "*.step", "*.stp", "*.STEP", "*.STP", "*.iges", "*.igs", "*.stl", "*.STL", "*.obj" } };
+    private static readonly FilePickerFileType AnyType = new("열 수 있는 모든 파일") { Patterns = new[] { "*.osc", "*.f3d", "*.step", "*.stp", "*.STEP", "*.STP", "*.iges", "*.igs", "*.stl", "*.STL", "*.obj" } };
+    private static readonly FilePickerFileType F3dType = new("Fusion 디자인 (.f3d)") { Patterns = new[] { "*.f3d" } };
+
+    // ------------------------------------------------------------ data panel
+
+    private readonly Border _dataPanel = new()
+    {
+        Width = 300,
+        Background = Ui.White,
+        BorderBrush = Ui.Line,
+        BorderThickness = new Thickness(0, 0, 1, 0),
+    };
+
+    public bool DataPanelVisible => _dataPanel.IsVisible;
+
+    public void ToggleDataPanel()
+    {
+        _dataPanel.IsVisible = !_dataPanel.IsVisible;
+        if (_dataPanel.IsVisible) BuildDataPanel();
+    }
+
+    /// <summary>Designs synced from the Fusion cloud (as STEP), newest first.</summary>
+    public static List<(string name, string path, DateTime time)> CloudDesigns()
+    {
+        if (!Directory.Exists(CloudFolder)) return new();
+        return Directory.EnumerateDirectories(CloudFolder)
+            .Select(d => Directory.EnumerateFiles(d).FirstOrDefault(f => f.EndsWith(".step", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".stp", StringComparison.OrdinalIgnoreCase)))
+            .Where(f => f != null)
+            .Select(f => (Path.GetFileNameWithoutExtension(f!), f!, File.GetLastWriteTime(f!)))
+            .OrderByDescending(x => x.Item3).ToList();
+    }
+
+    private void BuildDataPanel()
+    {
+        var list = new StackPanel { Margin = new Thickness(0, 0, 0, 12) };
+        var head = new Grid { ColumnDefinitions = new ColumnDefinitions("*,Auto"), Height = 40, Margin = new Thickness(12, 0, 6, 0) };
+        head.Children.Add(Ui.Label("데이터 패널", 15, Ui.Text, FontWeight.SemiBold));
+        var close = new FlatButton { Width = 28, Height = 28, Child = Ui.Centered(Icons.Line("close", 12)) }.Init();
+        close.Click += ToggleDataPanel;
+        Grid.SetColumn(close, 1);
+        head.Children.Add(close);
+        list.Children.Add(head);
+        FlatButton Action(string text, string icon, Action a)
+        {
+            var b = new FlatButton { Height = 32, Margin = new Thickness(10, 2), Normal = Ui.Brush("#EDEDED"), Child = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, Margin = new Thickness(10, 0), VerticalAlignment = VerticalAlignment.Center, Children = { Icons.Line(icon, 14), Ui.Label(text, 12) } } }.Init();
+            b.Click += a;
+            return b;
+        }
+        list.Children.Add(Action("새 디자인", "plus", () => _ = NewDesign()));
+        list.Children.Add(Action("열기...", "file", () => _ = OpenFile()));
+        list.Children.Add(Action("Fusion 디자인(.f3d) 변환해서 열기...", "datapanel", () => _ = OpenF3dPicker()));
+        void Section(string title) => list.Children.Add(new TextBlock { Text = title, FontSize = 12, FontWeight = FontWeight.SemiBold, Foreground = Ui.Muted, Margin = new Thickness(12, 14, 12, 4) });
+        FlatButton Item(string title, string sub, string icon, Action a)
+        {
+            var b = new FlatButton
+            {
+                Padding = new Thickness(12, 6),
+                Child = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 10,
+                    Children =
+                    {
+                        Icons.Color(icon, 26),
+                        new StackPanel { Children = { Ui.Label(title, 13), Ui.Label(sub, 11, Ui.Muted) } },
+                    },
+                },
+            }.Init();
+            ToolTip.SetTip(b, sub);
+            b.Click += a;
+            return b;
+        }
+        Section("Fusion 클라우드 (동기화된 디자인)");
+        var cloud = CloudDesigns();
+        if (cloud.Count == 0) list.Children.Add(new TextBlock { Text = "동기화된 디자인이 없습니다. Fusion 클라우드 동기화(cloud_sync)가 STEP을 받아 오면 여기에 나타납니다.", FontSize = 11, Foreground = Ui.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(12, 0) });
+        foreach (var (name, path, time) in cloud)
+        {
+            var p = path;
+            list.Children.Add(Item(name, time.ToString("yyyy-MM-dd HH:mm"), "insertcad", () => OpenPath(p)));
+        }
+        Section("최근 문서");
+        var recent = Recent();
+        if (recent.Count == 0) list.Children.Add(new TextBlock { Text = "아직 없습니다.", FontSize = 11, Foreground = Ui.Muted, Margin = new Thickness(12, 0) });
+        foreach (var r in recent)
+        {
+            var p = r;
+            list.Children.Add(Item(Path.GetFileNameWithoutExtension(r), r, "design", () => OpenPath(p)));
+        }
+        _dataPanel.Child = new ScrollViewer { Content = list, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
+    }
+
+    private async Task OpenF3dPicker()
+    {
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Fusion 디자인 열기", FileTypeFilter = new[] { F3dType } });
+        if (files.Count > 0 && files[0].TryGetLocalPath() is { } p) await OpenF3d(p);
+    }
+
+    /// <summary>.f3d is Autodesk's closed format: convert it through the Autodesk cloud (with consent), then open the STEP.</summary>
+    private async Task OpenF3d(string path)
+    {
+        if (!Aps.Configured)
+        {
+            await Ask("Fusion 디자인", $".f3d는 Autodesk 전용 형식이라 직접 열 수 없습니다. Autodesk 클라우드 변환에 쓸 APS 설정이 없습니다:\n{Aps.ConfigFile}\n\nFusion 클라우드 동기화로 받은 STEP은 데이터 패널에서 바로 열 수 있습니다.", "확인");
+            return;
+        }
+        if (await Ask("Fusion 디자인 변환", $"{Path.GetFileName(path)}\n\n.f3d는 Autodesk 전용 형식이라 Autodesk 클라우드(Model Derivative)에서 STEP으로 변환한 뒤 엽니다. 파일이 Autodesk 서버로 올라가며, 변환에 Autodesk Flex 토큰이 쓰일 수 있습니다. 계속할까요?", "변환", "취소") != 0) return;
+        var panel = new CommandPanel("Fusion 디자인 변환", "insertcad", null, CancelCommand);
+        var status = new TextBlock { Text = "준비 중...", FontSize = 12, TextWrapping = TextWrapping.Wrap };
+        panel.AddControl(status);
+        CancelCommand();
+        _cmd = new CommandSession { Id = "f3d", Panel = panel };
+        ShowDialog(panel);
+        try
+        {
+            var step = await Aps.F3dToStep(path, new Progress<string>(m => status.Text = m));
+            CancelCommand();
+            OpenPath(step);
+        }
+        catch (Exception ex)
+        {
+            panel.SetError(ex.Message);
+        }
+    }
 
     private async Task<bool> ConfirmDiscard()
     {
@@ -1013,7 +1337,16 @@ public sealed partial class MainWindow
     {
         try
         {
-            if (p.EndsWith(".osc", StringComparison.OrdinalIgnoreCase)) ResetTo(Doc.Load(File.ReadAllText(p)), p);
+            if (p.EndsWith(".f3d", StringComparison.OrdinalIgnoreCase))
+            {
+                _ = OpenF3d(p);
+                return;
+            }
+            if (p.EndsWith(".osc", StringComparison.OrdinalIgnoreCase))
+            {
+                ResetTo(Doc.Load(File.ReadAllText(p)), p);
+                AddRecent(p);
+            }
             else
             {
                 // a STEP/IGES/mesh file opens as a new design that inserts it
@@ -1047,6 +1380,10 @@ public sealed partial class MainWindow
             _dirty = false;
             UpdateTitle();
             RebuildBrowser();
+            AddRecent(path);
+            // like the IsaacSimLink add-in: optionally re-send to Isaac Sim after every save
+            if (AutoSyncOnSave && IsaacLink.AutoSync)
+                _ = RunIsaac(IsaacLink.LastMode(DesignName) == "robot" ? "isaac_robot" : "isaac_cad");
             return true;
         }
         catch (Exception ex)
@@ -1068,6 +1405,27 @@ public sealed partial class MainWindow
         if (f?.TryGetLocalPath() is not { } p) return false;
         if (!p.EndsWith(".osc", StringComparison.OrdinalIgnoreCase)) p += ".osc";
         return SaveTo(p);
+    }
+
+    /// <summary>Tests turn this off so saving never talks to a running Isaac Sim.</summary>
+    public bool AutoSyncOnSave { get; set; } = true;
+
+    private static string ConfigDir => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "openshape");
+
+    public static List<string> Recent()
+    {
+        var f = Path.Combine(ConfigDir, "recent");
+        return File.Exists(f) ? File.ReadAllLines(f).Where(File.Exists).Take(10).ToList() : new List<string>();
+    }
+
+    private static void AddRecent(string path)
+    {
+        try
+        {
+            Directory.CreateDirectory(ConfigDir);
+            File.WriteAllLines(Path.Combine(ConfigDir, "recent"), new[] { path }.Concat(Recent().Where(p => p != path)).Take(10));
+        }
+        catch (IOException) { }
     }
 
     private bool _forceClose;

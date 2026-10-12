@@ -8,7 +8,7 @@ Autodesk의 코드, 아이콘, 리소스는 포함되어 있지 않으며 Autode
 [Releases](../../releases)에서 `openshape_<버전>_amd64.deb`를 받아 설치합니다.
 
 ```
-sudo apt install ./openshape_0.5.0_amd64.deb
+sudo apt install ./openshape_1.0.0_amd64.deb
 ```
 
 ## 기능
@@ -20,7 +20,13 @@ sudo apt install ./openshape_0.5.0_amd64.deb
 - 파라메트릭 타임라인(편집·롤백·재생), 단면 분석, 측정
 - 파일: `.osc` 디자인, STEP·IGES·STL·OBJ 열기/삽입, STEP·STL·OBJ·USD 내보내기, Isaac Sim용 물리·접합 USD
 
-지원하지 않는 기능: 관리(매개변수), 스케치 자르기, 볼·핀-슬롯 접합, 접선·대칭 구속, 판금 펼치기, Fusion .f3d 직접 열기(Fusion 클라우드 동기화가 만드는 STEP으로 열 수 있음)
+- 관리: 사용자 매개변수와 식(숫자 칸·스케치 치수에 매개변수 이름 입력)
+- 스케치 자르기, 접선·대칭 구속, 볼·핀-슬롯·평면형 접합과 한계값, 판금 평면 패턴(DXF 내보내기)
+- 데이터 패널: Fusion 클라우드 동기화 디자인과 최근 문서, Fusion `.f3d`는 Autodesk APS로 STEP 변환 후 열기(Flex 토큰이 쓰일 수 있음)
+- IsaacSimLink 내장: Isaac Sim으로 형상(STEP) 또는 로봇(URDF: 링크·접합·질량·관성) 보내기, 저장할 때 자동 동기화
+- `/opt/openshape/replace-fusion-shortcuts.sh`: 바탕화면·앱 메뉴의 Fusion 바로가기를 OpenShape로 바꿈(백업, `--restore`로 되돌리기)
+
+알려진 한계: URDF에는 볼·핀-슬롯·원통형 접합이 없어 고정으로 보냅니다. 평면 패턴은 OpenShape 판금 플랜지로 만든 본체만 펼칩니다.
 
 ## 구성
 

@@ -49,6 +49,7 @@ internal static unsafe class Occt
     [DllImport(Lib)] public static extern void ok_edges_copy(double* xyz, int* counts);
     [DllImport(Lib)] public static extern int ok_face_frame(uint h, double x, double y, double z, double* out12);
     [DllImport(Lib)] public static extern int ok_joint_frame(uint h, double x, double y, double z, double* out6);
+    [DllImport(Lib)] public static extern int ok_mass(uint h, double* out10);
     [DllImport(Lib)] public static extern uint ok_wire(double* frame, int* kinds, double* data, int count);
     [DllImport(Lib)] public static extern uint ok_loft(uint* hs, int n, int solid);
     [DllImport(Lib)] public static extern uint ok_sweep(uint profile, uint path);
@@ -333,6 +334,17 @@ public sealed unsafe class Solid
         double* o = stackalloc double[6];
         if (Occt.ok_joint_frame(Shape, p.X, p.Y, p.Z, o) == 0) return null;
         return (new V3(o[0], o[1], o[2]), new V3(o[3], o[4], o[5]).Norm());
+    }
+
+    /// <summary>Volume, centre of mass and inertia tensor about it (Ixx Iyy Izz Ixy Iyz Ixz) for unit density (mm).</summary>
+    public (double volume, V3 center, double[] inertia) MassProperties
+    {
+        get
+        {
+            double* o = stackalloc double[10];
+            if (Occt.ok_mass(Shape, o) == 0) return (0, V3.Zero, new double[6]);
+            return (o[0], new V3(o[1], o[2], o[3]), new[] { o[4], o[5], o[6], o[7], o[8], o[9] });
+        }
     }
 
     /// <summary>Display triangles (9 doubles each) of the solid.</summary>

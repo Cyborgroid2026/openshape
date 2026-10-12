@@ -354,6 +354,8 @@ public abstract class Feature
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..10];
     public string Name { get; set; } = "";
+    /// <summary>Fields driven by expressions (property name → expression using user parameters).</summary>
+    public Dictionary<string, string> Expressions { get; set; } = new();
     [JsonIgnore] public string? Error { get; set; }
 
     /// <summary>Command id (also the icon key).</summary>
@@ -514,16 +516,33 @@ public sealed class JointFeature : Feature
     public double[] PickA { get; set; } = Array.Empty<double>();
     public string BodyB { get; set; } = "";
     public double[] PickB { get; set; } = Array.Empty<double>();
-    public string Type { get; set; } = "revolute";   // rigid, revolute, slider, cylindrical
+    public string Type { get; set; } = "revolute";   // rigid, revolute, slider, cylindrical, pinslot, planar, ball
     public double Angle { get; set; }
+    public double Angle2 { get; set; }
+    public double Angle3 { get; set; }
     public double Distance { get; set; }
+    public double Distance2 { get; set; }
     public double Offset { get; set; }
     public bool Flip { get; set; }
     public double? LowerLimit { get; set; }
     public double? UpperLimit { get; set; }
     public override string Command => "joint";
 
-    public static string TypeName(string t) => t switch { "rigid" => "강체", "slider" => "슬라이더", "cylindrical" => "원통형", _ => "회전" };
+    public static string TypeName(string t) => t switch
+    {
+        "rigid" => "강체",
+        "slider" => "슬라이더",
+        "cylindrical" => "원통형",
+        "pinslot" => "핀-슬롯",
+        "planar" => "평면형",
+        "ball" => "볼",
+        _ => "회전",
+    };
+
+    public static readonly string[] Types = { "rigid", "revolute", "slider", "cylindrical", "pinslot", "planar", "ball" };
+
+    /// <summary>A unit vector perpendicular to n (the joint's in-plane X direction).</summary>
+    public static V3 Perp(V3 n) => (Math.Abs(n.Z) < 0.9 ? n.Cross(V3.UnitZ) : n.Cross(V3.UnitX)).Norm();
 }
 
 public sealed class ChainRef
@@ -615,6 +634,86 @@ public sealed class BossFeature : Feature
     public override string Command => "boss";
 }
 
+public sealed class UserParameter
+{
+    public string Name { get; set; } = "";
+    public string Expression { get; set; } = "0";
+    public string Unit { get; set; } = "mm";
+    public string Comment { get; set; } = "";
+}
+
+/// <summary>Evaluates user parameters and field expressions.</summary>
+public static class Params
+{
+    private static readonly System.Text.RegularExpressions.Regex Word = new(@"[A-Za-z_가-힣][A-Za-z0-9_가-힣]*");
+
+    /// <summary>Value of an expression with parameter names replaced (units mm/deg are ignored).</summary>
+    public static double? Eval(string? expr, IReadOnlyDictionary<string, double> values)
+    {
+        if (string.IsNullOrWhiteSpace(expr)) return null;
+        var t = expr.Replace("mm", " ").Replace("deg", " ").Replace("°", " ").Replace(",", ".");
+        bool missing = false;
+        t = Word.Replace(t, m =>
+        {
+            if (values.TryGetValue(m.Value, out var v)) return "(" + v.ToString("R", System.Globalization.CultureInfo.InvariantCulture) + ")";
+            missing = true;
+            return m.Value;
+        });
+        if (missing) return null;
+        try
+        {
+            var r = new System.Data.DataTable().Compute(t, null);
+            double d = Convert.ToDouble(r, System.Globalization.CultureInfo.InvariantCulture);
+            return double.IsFinite(d) ? d : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public static bool HasName(string text) => Word.IsMatch(text.Replace("mm", "").Replace("deg", ""));
+
+    /// <summary>All user parameter values (parameters may use earlier or later ones).</summary>
+    public static Dictionary<string, double> Compute(IEnumerable<UserParameter> ps)
+    {
+        var list = ps.ToList();
+        var values = new Dictionary<string, double>();
+        for (int pass = 0; pass < list.Count + 1; pass++)
+        {
+            bool changed = false;
+            foreach (var p in list)
+                if (!values.ContainsKey(p.Name) && Eval(p.Expression, values) is { } v)
+                {
+                    values[p.Name] = v;
+                    changed = true;
+                }
+            if (!changed) break;
+        }
+        return values;
+    }
+
+    /// <summary>Write expression results into the feature's numeric properties.</summary>
+    public static void Apply(Feature f, IReadOnlyDictionary<string, double> values)
+    {
+        foreach (var (prop, expr) in f.Expressions)
+        {
+            var pi = f.GetType().GetProperty(prop);
+            if (pi == null) continue;
+            var v = Eval(expr, values) ?? throw new InvalidOperationException($"식을 계산할 수 없습니다: {expr}");
+            if (pi.PropertyType == typeof(double)) pi.SetValue(f, v);
+            else if (pi.PropertyType == typeof(int)) pi.SetValue(f, (int)Math.Round(v));
+            else if (pi.PropertyType == typeof(double?)) pi.SetValue(f, (double?)v);
+        }
+        if (f is SketchFeature sk && sk.Constraints.Any(c => c.Expression != null))
+        {
+            foreach (var c in sk.Constraints.Where(c => c.Expression != null))
+                c.Value = Eval(c.Expression, values) ?? throw new InvalidOperationException($"치수 식을 계산할 수 없습니다: {c.Expression}");
+            if (SketchSolver.Solve(sk) < 0) throw new InvalidOperationException("매개변수 값으로 스케치를 풀 수 없습니다.");
+        }
+    }
+}
+
 public sealed class ComponentDef
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..10];
@@ -624,7 +723,11 @@ public sealed class ComponentDef
 }
 
 /// <summary>A joint after evaluation (for display and physics export).</summary>
-public sealed record JointInfo(string Name, string Type, V3 Origin, V3 Axis, List<string> Moving, List<string> Fixed, double? Lower, double? Upper);
+public sealed record JointInfo(string Name, string Type, V3 Origin, V3 Axis, List<string> Moving, List<string> Fixed, double? Lower, double? Upper)
+{
+    /// <summary>In-plane direction (slot direction for pin-slot, X for planar).</summary>
+    public V3 U => JointFeature.Perp(Axis);
+}
 
 public sealed class ImportFeature : Feature
 {
@@ -649,6 +752,7 @@ public sealed class Doc
     public int Marker { get; set; }
     public Dictionary<string, string> BodyNames { get; set; } = new();
     public List<ComponentDef> Components { get; set; } = new();
+    public List<UserParameter> Parameters { get; set; } = new();
     /// <summary>Sheet metal rule (판금 규칙).</summary>
     public double SheetThickness { get; set; } = 1;
     public double SheetBendRadius { get; set; } = 1;
@@ -714,8 +818,15 @@ public sealed class Body
     public Body With(Solid s) => new() { Id = Id, Solid = s };
 }
 
+/// <summary>How a sheet metal body was built (for its flat pattern).</summary>
+public sealed record SheetInfo(List<(PlaneFrame frame, List<Profile> region)> Base, double Thickness, List<FlangeInfo> Flanges);
+
+public sealed record FlangeInfo(V3 Origin, V3 Outward, V3 Normal, V3 Dir, double Length, double Developed);
+
 public sealed class ModelState
 {
+    public Dictionary<string, SheetInfo> Sheets { get; } = new();
+
     public List<Body> Bodies { get; } = new();
     public List<SketchFeature> Sketches { get; } = new();
     public List<JointInfo> Joints { get; } = new();
@@ -727,6 +838,7 @@ public sealed class ModelState
         s.Bodies.AddRange(Bodies.Select(b => b.With(b.Solid)));
         s.Sketches.AddRange(Sketches);
         s.Joints.AddRange(Joints);
+        foreach (var (k, v) in Sheets) s.Sheets[k] = v;
         foreach (var (k, v) in SketchProfiles) s.SketchProfiles[k] = v;
         return s;
     }
@@ -736,6 +848,9 @@ public sealed class ModelState
 
 public static class Evaluator
 {
+    /// <summary>User parameter values of the document being evaluated.</summary>
+    public static IReadOnlyDictionary<string, double> ParameterValues { get; set; } = new Dictionary<string, double>();
+
     /// <summary>Components of the document being evaluated (joints move a whole component).</summary>
     public static IReadOnlyList<ComponentDef> Components { get; set; } = Array.Empty<ComponentDef>();
 
@@ -772,6 +887,7 @@ public static class Evaluator
             try
             {
                 f.Error = null;
+                Params.Apply(f, ParameterValues);
                 Apply(s, f);
             }
             catch (Exception ex)
@@ -1032,13 +1148,16 @@ public static class Evaluator
             {
                 if (fl.Profiles.Count == 0) throw new InvalidOperationException("프로파일을 선택하세요.");
                 Solid? tool = null;
+                var bases = new List<(PlaneFrame, List<Profile>)>();
                 foreach (var r in fl.Profiles)
                 {
                     var region = RegionOf(s, r, out var sk);
                     var part = Solid.Extrude(sk.Frame, region, 0, fl.Thickness);
                     tool = tool == null ? part : tool.Boolean(part, BoolOp.Union);
+                    bases.Add((sk.Frame, region));
                 }
                 s.Bodies.Add(new Body { Id = f.Id + ":0", Solid = tool! });
+                s.Sheets[f.Id + ":0"] = new SheetInfo(bases, fl.Thickness, new List<FlangeInfo>());
                 break;
             }
 
@@ -1067,6 +1186,8 @@ public static class Evaluator
                 var profile = new Profile(0, new List<P2>(), 1, new List<int>(), pieces);
                 var wall = Solid.Extrude(plane, new[] { profile }, sgn > 0 ? 0 : -fr.length, sgn > 0 ? fr.length : 0);
                 Replace(s, body, body.Solid.Boolean(wall, BoolOp.Union));
+                if (s.Sheets.TryGetValue(body.Id, out var sheet))
+                    s.Sheets[body.Id] = sheet with { Flanges = sheet.Flanges.Append(new FlangeInfo(fr.o, fr.outward, fr.normal, fr.dir, fr.length, fl.DevelopedLength)).ToList() };
                 break;
             }
 
@@ -1130,15 +1251,31 @@ public static class Evaluator
                 var fb = b.Solid.JointFrame(new V3(j.PickB[0], j.PickB[1], j.PickB[2])) ?? throw new InvalidOperationException("구성요소 2의 접합 원점을 찾을 수 없습니다.");
                 var nb = fb.axis;
                 var origin = fb.origin + nb * j.Offset;
-                double angle = j.Type is "revolute" or "cylindrical" or "rigid" ? j.Angle : 0;
+                double angle = j.Type is "slider" ? 0 : j.Angle;
                 double slide = j.Type is "slider" or "cylindrical" ? j.Distance : 0;
+                var u = JointFeature.Perp(nb);
+                var v = nb.Cross(u);
                 var m = Align(fa.origin, fa.axis, j.Flip ? nb : -nb)
                     .Then(Affine.Translation(origin - fa.origin))
                     .Then(Affine.Rotation(origin, nb, angle))
                     .Then(Affine.Translation(nb * slide));
+                switch (j.Type)
+                {
+                    case "pinslot":
+                        m = m.Then(Affine.Translation(u * j.Distance));
+                        break;
+                    case "planar":
+                        m = m.Then(Affine.Translation(u * j.Distance + v * j.Distance2));
+                        break;
+                    case "ball":
+                        m = m.Then(Affine.Rotation(origin, u, j.Angle2)).Then(Affine.Rotation(origin, v, j.Angle3));
+                        break;
+                }
+                if (j.Type is "pinslot") slide = 0;
                 foreach (var id in moving)
                     if (s.Find(id) is { } body) Replace(s, body, body.Solid.Transform(m));
-                s.Joints.Add(new JointInfo(j.Name, j.Type, origin + nb * slide, nb, moving, fixedGroup, j.LowerLimit, j.UpperLimit));
+                var at = origin + nb * slide + (j.Type switch { "pinslot" => u * j.Distance, "planar" => u * j.Distance + v * j.Distance2, _ => V3.Zero });
+                s.Joints.Add(new JointInfo(j.Name, j.Type, at, nb, moving, fixedGroup, j.LowerLimit, j.UpperLimit));
                 break;
             }
 

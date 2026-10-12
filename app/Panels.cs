@@ -83,11 +83,15 @@ public sealed class CommandPanel : Border
         _error.IsVisible = !string.IsNullOrEmpty(message);
     }
 
-    public TextBox AddNumber(string label, double value, string unit, Action<double> set, Action? changed = null)
+    /// <summary>Current user parameter values (for expressions typed into number fields).</summary>
+    public static IReadOnlyDictionary<string, double> ParameterValues { get; set; } = new Dictionary<string, double>();
+
+    public TextBox AddNumber(string label, double value, string unit, Action<double> set, Action? changed = null, Feature? owner = null, string? bind = null)
     {
+        string initial = owner != null && bind != null && owner.Expressions.TryGetValue(bind, out var ex) ? ex : Format(value, unit);
         var box = new TextBox
         {
-            Text = Format(value, unit),
+            Text = initial,
             Height = 28,
             MinHeight = 0,
             Padding = new Thickness(6, 3),
@@ -100,12 +104,18 @@ public sealed class CommandPanel : Border
         {
             if (TryParse(box.Text, out var v))
             {
+                if (owner != null && bind != null)
+                {
+                    // a field that names a parameter keeps the expression, so it follows parameter changes
+                    if (Params.HasName(box.Text ?? "")) owner.Expressions[bind] = box.Text!.Trim();
+                    else owner.Expressions.Remove(bind);
+                }
                 set(v);
                 changed?.Invoke();
             }
         }
         box.TextChanged += (_, _) => Apply();
-        box.LostFocus += (_, _) => { if (TryParse(box.Text, out var v)) box.Text = Format(v, unit); };
+        box.LostFocus += (_, _) => { if (TryParse(box.Text, out var v) && !Params.HasName(box.Text ?? "")) box.Text = Format(v, unit); };
         Row(label, box);
         return box;
     }
@@ -116,6 +126,11 @@ public sealed class CommandPanel : Border
     public static bool TryParse(string? text, out double v)
     {
         v = 0;
+        if (Params.HasName(text ?? ""))
+        {
+            if (Params.Eval(text, ParameterValues) is { } pv) { v = pv; return true; }
+            return false;
+        }
         var t = (text ?? "").Replace("mm", "").Replace("deg", "").Replace("°", "").Replace(",", ".").Trim();
         if (t.Length == 0) return false;
         try

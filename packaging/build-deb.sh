@@ -2,7 +2,7 @@
 # Build the Rust engine and the self-contained C# app, run the tests, then package a .deb.
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION=0.5.0
+VERSION=1.0.0
 ARCH=amd64
 PKG=openshape_${VERSION}_${ARCH}
 STAGE="$ROOT/build/$PKG"
@@ -18,7 +18,8 @@ export LD_LIBRARY_PATH="$OCCT_PREFIX/lib/x86_64-linux-gnu${LD_LIBRARY_PATH:+:$LD
 # headless UI walkthrough: drives the real window and must pass before packaging
 dotnet build "$ROOT/uitest/UiTest.csproj" -c Release
 rm -rf "$ROOT/build-uitest"
-dotnet "$ROOT/uitest/bin/Release/net10.0/UiTest.dll" "$ROOT/build-uitest"
+# isolated settings so the walkthrough never touches the user's recent-files list
+XDG_CONFIG_HOME="$ROOT/build-uitest/config" dotnet "$ROOT/uitest/bin/Release/net10.0/UiTest.dll" "$ROOT/build-uitest"
 
 rm -rf "$ROOT/build" && mkdir -p "$STAGE/DEBIAN" "$STAGE/opt/openshape" "$STAGE/usr/bin" \
     "$STAGE/usr/share/applications" "$STAGE/usr/share/icons/hicolor/256x256/apps" "$STAGE/usr/share/mime/packages"
@@ -28,6 +29,7 @@ dotnet publish "$ROOT/app/OpenShape.csproj" -c Release -r linux-x64 --self-conta
 "$STAGE/opt/openshape/openshape" --export-icon "$STAGE/opt/openshape/openshape.png"
 cp "$STAGE/opt/openshape/openshape.png" "$STAGE/usr/share/icons/hicolor/256x256/apps/openshape.png"
 ln -s ../../opt/openshape/openshape "$STAGE/usr/bin/openshape"
+install -m 755 "$ROOT/packaging/replace-fusion-shortcuts.sh" "$STAGE/opt/openshape/replace-fusion-shortcuts.sh"
 
 cat > "$STAGE/usr/share/applications/openshape.desktop" <<DESKTOP
 [Desktop Entry]
@@ -71,7 +73,10 @@ Description: Parametric 3D CAD for Ubuntu
  follows Autodesk Fusion (toolbar, browser, timeline, ViewCube, navigation
  bar): sketches (also on model faces), extrude, revolve, loft, sweep,
  primitives, surfaces (extrude, patch, thicken), sheet metal flanges,
- plastic ribs and bosses, press/pull, section analysis,
+ plastic ribs and bosses, press/pull, section analysis, parameters, sketch
+ trim, tangent/symmetric constraints, flat patterns with DXF export, data
+ panel for Fusion cloud designs, .f3d conversion via Autodesk APS, built-in
+ IsaacSimLink (send geometry or URDF robots to Isaac Sim),
  booleans, fillet, chamfer, shell, sketch dimensions and constraints
  (SolveSpace solver), components and rigid/revolute/slider
  joints, move, mirror, patterns, STEP/IGES import,

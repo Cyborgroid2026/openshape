@@ -89,7 +89,12 @@ public sealed partial class MainWindow : Window
         _canvasLayer.Children.Add(cube);
         _canvasLayer.Children.Add(_promptBox);
         _canvasLayer.Children.Add(_dialogHost);
-        root.Children.Add(_canvasLayer);
+        var center = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
+        _dataPanel.IsVisible = false;
+        center.Children.Add(_dataPanel);
+        Grid.SetColumn(_canvasLayer, 1);
+        center.Children.Add(_canvasLayer);
+        root.Children.Add(center);
         Content = root;
 
         KeyDown += OnKey;
@@ -117,6 +122,8 @@ public sealed partial class MainWindow : Window
     private ModelState Eval(IReadOnlyList<Feature> features, int to, ModelState? start = null, int from = 0)
     {
         Evaluator.Components = _doc.Components;
+        Evaluator.ParameterValues = Params.Compute(_doc.Parameters);
+        CommandPanel.ParameterValues = Evaluator.ParameterValues;
         return Evaluator.Run(features, to, start, from);
     }
 
@@ -151,7 +158,8 @@ public sealed partial class MainWindow : Window
             if (_doc.HiddenBodies.Contains(b.Id)) continue;
             var col = _doc.BodyColors.TryGetValue(b.Id, out var hex) ? Color.Parse(hex) : DefaultBody;
             uint flags = _selBodies.Contains(b.Id) && _sk == null ? Viewport.Selected : 0;
-            items.Add(new RenderItem(_section != null ? SectionOf(b.Solid) : b.Solid, col, flags));
+            var shown = _flatView is { } fv && fv.body == b.Id ? fv.flat : b.Solid;
+            items.Add(new RenderItem(_section != null ? SectionOf(shown) : shown, col, flags));
             _itemBodies.Add(b.Id);
         }
         View.Items = items;
@@ -222,8 +230,7 @@ public sealed partial class MainWindow : Window
     {
         var left = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(8, 0, 8, 0), Spacing = 2 };
         left.Children.Add(BarButton(Icons.Line("home"), "홈", () => { }));
-        var data = BarButton(Icons.Line("datapanel"), "데이터 패널 표시", () => { });
-        data.IsEnabled = false;
+        var data = BarButton(Icons.Line("datapanel"), "데이터 패널 표시", ToggleDataPanel);
         left.Children.Add(data);
         var file = BarButton(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, Children = { Icons.Line("file"), Icons.Line("chevdown", 10) } }, "파일", () => { }, 44);
         FlyoutBase.SetAttachedFlyout(file, FileMenu());
@@ -343,7 +350,7 @@ public sealed partial class MainWindow : Window
         var tabs = new List<(string id, string label, bool enabled)>
         {
             ("solid", "솔리드", true), ("surface", "곡면", true), ("mesh", "메쉬", true), ("sheet", "판금", true),
-            ("plastic", "플라스틱", true), ("manage", "관리", false), ("utilities", "유틸리티", true),
+            ("plastic", "플라스틱", true), ("manage", "관리", true), ("utilities", "유틸리티", true),
         };
         if (_sk != null) tabs.Add(("sketch", "스케치", true));
         foreach (var (id, label, enabled) in tabs)
@@ -405,6 +412,11 @@ public sealed partial class MainWindow : Window
         ["flange"] = "플랜지",
         ["edgeflange"] = "모서리 플랜지",
         ["sheetrule"] = "판금 규칙",
+        ["isaac_cad"] = "Isaac Sim으로 보내기 (형상)",
+        ["isaac_robot"] = "Isaac Sim으로 보내기 (로봇·URDF)",
+        ["isaac_auto"] = "저장할 때 자동 동기화",
+        ["isaac_status"] = "Isaac Sim 연결 확인",
+        ["flatpattern"] = "평면 패턴 작성",
         ["rib"] = "리브",
         ["boss"] = "보스",
         ["select"] = "선택",
@@ -427,10 +439,12 @@ public sealed partial class MainWindow : Window
         ["c_fix"] = "고정/고정 해제",
         ["c_midpoint"] = "중간점",
         ["c_concentric"] = "동심",
+        ["c_tangent"] = "접선",
+        ["c_symmetric"] = "대칭",
         ["finish"] = "스케치 마침",
     };
 
-    private static readonly HashSet<string> Unsupported = new() { "parameters", "trim" };
+    private static readonly HashSet<string> Unsupported = new() { };
 
     /// <summary>One toolbar group: a row of big icons with the group name (and ▾ menu) underneath.</summary>
     private Control Group(string title, string[] shown, string[] menu)
@@ -484,8 +498,8 @@ public sealed partial class MainWindow : Window
             row.Children.Add(Separator());
             row.Children.Add(Group("수정", new[] { "trim" }, new[] { "trim" }));
             row.Children.Add(Separator());
-            row.Children.Add(Group("구속조건", new[] { "c_hv", "c_coincident", "c_parallel", "c_perpendicular", "c_equal", "c_fix", "c_midpoint", "c_concentric" },
-                new[] { "c_hv", "c_coincident", "c_parallel", "c_perpendicular", "c_equal", "c_fix", "c_midpoint", "c_concentric" }));
+            row.Children.Add(Group("구속조건", new[] { "c_hv", "c_coincident", "c_tangent", "c_parallel", "c_perpendicular", "c_equal", "c_fix", "c_midpoint", "c_concentric", "c_symmetric" },
+                new[] { "c_hv", "c_coincident", "c_tangent", "c_parallel", "c_perpendicular", "c_equal", "c_fix", "c_midpoint", "c_concentric", "c_symmetric" }));
             row.Children.Add(Separator());
             row.Children.Add(Group("검사", new[] { "measure" }, new[] { "measure" }));
             row.Children.Add(Separator());
@@ -518,7 +532,7 @@ public sealed partial class MainWindow : Window
         }
         else if (_tab == "sheet")
         {
-            row.Children.Add(Group("작성", new[] { "sketch", "flange", "edgeflange" }, new[] { "sketch", "-", "flange", "edgeflange" }));
+            row.Children.Add(Group("작성", new[] { "sketch", "flange", "edgeflange", "flatpattern" }, new[] { "sketch", "-", "flange", "edgeflange", "-", "flatpattern" }));
             row.Children.Add(Separator());
             row.Children.Add(Group("수정", new[] { "sheetrule", "presspull", "move" }, new[] { "sheetrule", "-", "presspull", "fillet", "move", "delete" }));
             row.Children.Add(Separator());
@@ -546,9 +560,17 @@ public sealed partial class MainWindow : Window
             row.Children.Add(Separator());
             row.Children.Add(Group("내보내기", new[] { "export" }, new[] { "export" }));
         }
+        else if (_tab == "manage")
+        {
+            row.Children.Add(Group("관리", new[] { "parameters" }, new[] { "parameters" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("검사", new[] { "measure" }, new[] { "measure" }));
+        }
         else if (_tab == "utilities")
         {
             row.Children.Add(Group("만들기", new[] { "export" }, new[] { "export" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("애드인 · IsaacSimLink", new[] { "isaac_cad", "isaac_robot", "isaac_auto", "isaac_status" }, new[] { "isaac_cad", "isaac_robot", "-", "isaac_auto", "isaac_status" }));
             row.Children.Add(Separator());
             row.Children.Add(Group("검사", new[] { "measure" }, new[] { "measure" }));
             row.Children.Add(Separator());
@@ -571,6 +593,8 @@ public sealed partial class MainWindow : Window
             row.Children.Add(Group("삽입", new[] { "insertmesh", "insertcad" }, new[] { "insertmesh", "insertcad" }));
             row.Children.Add(Separator());
             row.Children.Add(Group("선택", new[] { "select" }, new[] { "select" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("Isaac Sim", new[] { "isaac_cad", "isaac_robot" }, new[] { "isaac_cad", "isaac_robot", "-", "isaac_auto", "isaac_status" }));
         }
         _toolbarGroups.Content = row;
     }
@@ -1102,9 +1126,10 @@ public sealed partial class MainWindow : Window
     private void ShowAbout()
     {
         var panel = new CommandPanel("정보", null, () => CloseDialog(), null);
-        panel.AddText("OpenShape CAD 0.5.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
+        panel.AddText("OpenShape CAD 1.0.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
                       "Autodesk의 코드나 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다.\n\n" +
-                      "아직 지원하지 않는 기능: 관리(매개변수), 스케치 자르기, 볼·핀-슬롯 조인트, 접선·대칭 구속, 판금 펼치기, .f3d 직접 열기(클라우드 동기화의 STEP으로 열 수 있음)");
+                      "Fusion IsaacSimLink 애드인의 기능(형상·로봇 보내기, 저장 시 자동 동기화)이 내장되어 있고, Fusion 클라우드 디자인은 데이터 패널에서 열 수 있습니다. " +
+                      ".f3d 파일은 Autodesk 클라우드(APS)에서 STEP으로 변환해 엽니다.");
         ShowDialog(panel);
     }
 }

@@ -735,6 +735,22 @@ public sealed partial class MainWindow
     private void SketchClick(Point screen)
     {
         var s = _sk!;
+        if (s.Tool == "trim")
+        {
+            if (HitRef(screen) is { } tr && tr.kind is "line" or "circle" || NearestEntity(screen) >= 0)
+            {
+                int ent = HitRef(screen) is { kind: "line" or "circle" } h ? SketchSolver.Ent(h.r) : NearestEntity(screen);
+                if (ent >= 0 && HitPlane(s.Draft.Frame, screen) is { } hp)
+                {
+                    s.Remember();
+                    SketchTrim.Trim(s.Draft, ent, hp.p);
+                    SolveSketch();
+                    ShowSketchPalette();
+                    View.InvalidateVisual();
+                }
+            }
+            return;
+        }
         if (s.Tool == "dimension" || ConstraintTools.Contains(s.Tool))
         {
             if (_pendingLineDim != null && HitRef(screen) == null) FinishPendingLineDimension(screen);
@@ -773,6 +789,28 @@ public sealed partial class MainWindow
         SketchInput(q, snapRef);
     }
 
+    /// <summary>Entity whose curve passes within 7 px of the point (-1 if none).</summary>
+    private int NearestEntity(Point screen)
+    {
+        var s = _sk!;
+        var f = s.Draft.Frame;
+        int found = -1;
+        double best = 7;
+        for (int i = 0; i < s.Draft.Entities.Count; i++)
+        {
+            var e = s.Draft.Entities[i];
+            var pts = e.Points();
+            if (e.Closed) pts.Add(pts[0]);
+            for (int k = 0; k + 1 < pts.Count; k++)
+            {
+                if (ToScreen(f, pts[k]) is not { } a || ToScreen(f, pts[k + 1]) is not { } b) continue;
+                double d = SegmentDistance(screen, a, b);
+                if (d < best) { best = d; found = i; }
+            }
+        }
+        return found;
+    }
+
     private static double SegmentDistance(Point p, Point a, Point b)
     {
         var ab = b - a;
@@ -806,8 +844,13 @@ public sealed partial class MainWindow
                 row.Children.Add(Ui.Label(SketchConstraint.DisplayName(c.Kind), 12));
                 if (SketchConstraint.IsDimension(c.Kind))
                 {
-                    var box = new TextBox { Text = CommandPanel.Format(c.Value, c.Kind == "angle" ? "deg" : "mm"), Width = 96, Height = 24, MinHeight = 0, Padding = new Thickness(4, 1), FontSize = 12, Tag = $"치수{i + 1}" };
-                    box.KeyDown += (_, e) => { if (e.Key == Key.Enter && CommandPanel.TryParse(box.Text, out var v) && v > 0) SetDimension(k, v); };
+                    var box = new TextBox { Text = c.Expression ?? CommandPanel.Format(c.Value, c.Kind == "angle" ? "deg" : "mm"), Width = 96, Height = 24, MinHeight = 0, Padding = new Thickness(4, 1), FontSize = 12, Tag = $"치수{i + 1}" };
+                    box.KeyDown += (_, e) =>
+                    {
+                        if (e.Key != Key.Enter || !CommandPanel.TryParse(box.Text, out var v) || v <= 0) return;
+                        c.Expression = Params.HasName(box.Text ?? "") ? box.Text!.Trim() : null;
+                        SetDimension(k, v);
+                    };
                     Grid.SetColumn(box, 1);
                     row.Children.Add(box);
                 }

@@ -12,7 +12,19 @@ var outDir = args.Length > 0 ? args[0] : "shots";
 Directory.CreateDirectory(outDir);
 AppBuilder.Configure<App>().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
 
-var w = new MainWindow(Array.Empty<string>()) { Width = 1500, Height = 920 };
+// never talk to a running Isaac Sim or write into the real exchange folder from tests
+var realExchange = OpenShape.IsaacLink.Exchange;
+var testExchange = Path.Combine(Path.GetFullPath(outDir), "exchange");
+Directory.CreateDirectory(Path.Combine(testExchange, "cloud"));
+var realCloud = Path.Combine(realExchange, "cloud", "XL_430_new");
+if (Directory.Exists(realCloud))
+{
+    Directory.CreateDirectory(Path.Combine(testExchange, "cloud", "XL_430_new"));
+    foreach (var f in Directory.GetFiles(realCloud)) File.Copy(f, Path.Combine(testExchange, "cloud", "XL_430_new", Path.GetFileName(f)), true);
+}
+OpenShape.IsaacLink.Exchange = testExchange;
+OpenShape.IsaacLink.Port = 1;   // nothing listens there
+var w = new MainWindow(Array.Empty<string>()) { Width = 1500, Height = 920, AutoSyncOnSave = false };
 w.Show();
 Pump();
 int step = 0;
@@ -91,6 +103,7 @@ void SetCombo(string label, int index)
 double Volume() => w.State.Bodies.Sum(b => b.Solid.Info.Volume);
 bool Near(double a, double b, double rel = 0.015) => Math.Abs(a - b) <= rel * Math.Abs(b);
 
+if (Environment.GetEnvironmentVariable("OSC_JUMP") == "sketchtools") goto SketchTools;
 Shot("start");
 Check(w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "솔리드") && w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "브라우저"),
     "toolbar tabs and browser are shown");
@@ -397,7 +410,7 @@ w.InsertFilePath(stepFile);
 Check(w.State.Bodies.Count == nb * 2 && Near(Volume(), total * 2, 1e-4), "re-imported STEP has the same exact bodies");
 
 // a real Fusion cloud design (STEP from the cloud sync), when present on this machine
-var cloud = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "fusion-webviewer", "exchange", "cloud", "XL_430_new", "XL_430_new.step");
+var cloud = Path.Combine(testExchange, "cloud", "XL_430_new", "XL_430_new.step");
 if (File.Exists(cloud))
 {
     w.OpenPath(cloud);
@@ -645,6 +658,144 @@ Check(shown < Volume() * 0.8 && shown > 0, "section analysis shows only one side
 Shot("section");
 Click(Text("취소"));
 Check(Math.Abs(w.View.Items.Sum(i => i.Solid.Info.Volume) - Volume()) < 1e-6, "cancelling turns the section off");
+
+// ================= parameters =================
+await Fresh("params");
+w.RunCommand("parameters");
+Pump();
+Click(Text("사용자 매개변수 추가"));
+SetField("이름1", "width");
+SetField("식1", "40 mm");
+Click(Text("확인"));
+Check(w.Document.Parameters.Count == 1 && w.Document.Parameters[0].Name == "width", "a user parameter is added in 매개변수 변경");
+w.RunCommand("box");
+Pump();
+SetField("길이", "width");
+w.RefreshPreview();
+Click(Text("확인"));
+Check(Near(Volume(), 40 * 20 * 20, 1e-9) && w.Document.Features.Last().Expressions.ContainsKey("A"), "a field typed as 'width' uses the parameter and keeps the expression");
+w.RunCommand("parameters");
+Pump();
+SetField("식1", "width_base * 2");
+Click(Text("사용자 매개변수 추가"));
+SetField("이름2", "width_base");
+SetField("식2", "25");
+Click(Text("확인"));
+Check(Near(Volume(), 50 * 20 * 20, 1e-9), "changing the parameter (now a formula of another one) rebuilds the box at 50 mm");
+
+// ================= trim, tangent, symmetric =================
+SketchTools:
+await Fresh("sketchtools");
+SketchOn("XY");
+Shape("line", (-20, 0), (20, 0));
+Shape("line", (0, -20), (0, 20));
+Shape("circle", (30, 0), (38, 0));
+var tk = w.Sketch!.Draft;
+w.RunCommand("trim");
+Pump();
+Click(SketchPt(10, 0));
+var horizontal = tk.Entities.Where(e => e.Kind == "line" && Math.Abs(e.P[1]) < 1e-9 && Math.Abs(e.P[3]) < 1e-9).ToList();
+Check(horizontal.Count == 1 && Math.Abs(Math.Max(horizontal[0].P[0], horizontal[0].P[2])) < 1e-6, "trim removes the half of the line beyond the crossing");
+Key(Avalonia.Input.Key.Escape);
+Shape("circle", (-15, 12), (-11, 12));
+w.RunCommand("c_tangent");
+Pump();
+Click(SketchPt(-10, 0));
+Click(SketchPt(-15, 16));
+var tc = tk.Entities.Last();
+Check(tk.Constraints.Any(c => c.Kind == "tangent") && Math.Abs(Math.Abs(tc.P[1]) - tc.P[2]) < 1e-6, $"tangent makes the circle touch the line (centre y {tc.P[1]:0.###}, r {tc.P[2]:0.###})");
+Shape("circle", (-8, -10), (-6, -10));
+Shape("circle", (9, -13), (11, -13));
+w.RunCommand("c_symmetric");
+Pump();
+Click(SketchPt(-8, -10));
+Click(SketchPt(9, -13));
+Click(SketchPt(0, -17));
+var sc1 = tk.Entities[^2];
+var sc2 = tk.Entities[^1];
+Check(Math.Abs(sc1.P[0] + sc2.P[0]) < 1e-6 && Math.Abs(sc1.P[1] - sc2.P[1]) < 1e-6, "symmetric mirrors the two centres about the vertical line");
+Shot("sketch_tools");
+Finish();
+
+// ================= more joints =================
+await Fresh("joints2");
+Box(60, 60, 10, 0);
+Box(10, 10, 40, 100);
+var plate2 = w.State.Bodies[0].Id;
+var arm2 = w.State.Bodies[1].Id;
+w.FitAll();
+Pump();
+w.RunCommand("joint");
+Pump();
+w.View.SetView(-55, -30);
+Pump();
+Click(World(new V3(100, 0, 0)));
+w.View.SetView(-55, 35);
+Pump();
+Click(World(new V3(10, 10, 10)));
+SetCombo("유형", Array.IndexOf(JointFeature.Types, "planar"));
+SetField("X 거리", "12");
+SetField("Y 거리", "-7");
+w.RefreshPreview();
+Click(Text("확인"));
+var armP = w.State.Find(arm2)!.Solid.Info;
+var u = JointFeature.Perp(V3.UnitZ);
+var vdir = V3.UnitZ.Cross(u);
+var expect = u * 12 + vdir * -7;
+Check(Math.Abs((armP.Min.X + armP.Max.X) / 2 - expect.X) < 1e-6 && Math.Abs((armP.Min.Y + armP.Max.Y) / 2 - expect.Y) < 1e-6, "planar joint slides the arm in the plate plane");
+w.EditFeature(w.Document.Features.Count - 1);
+Pump();
+SetCombo("유형", Array.IndexOf(JointFeature.Types, "ball"));
+SetField("요", "90");
+w.RefreshPreview();
+Click(Text("확인"));
+armP = w.State.Find(arm2)!.Solid.Info;
+Check(armP.Max.Z - armP.Min.Z < 15, "ball joint tips the arm over (yaw 90°)");
+
+// ================= flat pattern + DXF =================
+w.OpenPath(Path.Combine(outDir, "before_plastic.osc"));
+Pump();
+var sheetBody = w.State.Sheets.Keys.First();
+var flat = w.FlatPatternOf(sheetBody)!;
+double dev = Math.PI / 2 * (1 + 0.44) + (10 - 1 - 1);
+Check(Near(flat.Info.Volume, 1200 + 40 * dev * 1, 1e-6), $"flat pattern unfolds the flange ({flat.Info.Volume:0.0} ≈ {1200 + 40 * dev:0.0} mm³)");
+var dxfPath = Path.Combine(outDir, "flat.dxf");
+Check(w.ExportDxf(sheetBody, dxfPath) && File.ReadAllText(dxfPath).Split("LINE").Length > 6, "flat pattern outline is written as DXF");
+w.RunCommand("flatpattern");
+Pump();
+Iso();
+Shot("flat_pattern");
+Key(Avalonia.Input.Key.Escape);
+
+// ================= IsaacSimLink (offline) =================
+w.OpenPath(Path.Combine(outDir, "before_loft.osc"));
+Pump();
+var urdfPath = OpenShape.IsaacLink.WriteUrdf("test_robot", w.State, w.Document, w.BodyName, out var urdfWarn);
+var urdf = System.Xml.Linq.XDocument.Load(urdfPath);
+var linksX = urdf.Root!.Elements("link").ToList();
+var jointX = urdf.Root.Elements("joint").ToList();
+double massArm = linksX.Select(l => double.Parse(l.Element("inertial")?.Element("mass")?.Attribute("value")?.Value ?? "0", System.Globalization.CultureInfo.InvariantCulture)).Min();
+Check(linksX.Count == 2 && jointX.Count == 1 && jointX[0].Attribute("type")!.Value == "continuous" && jointX[0].Element("axis")!.Attribute("xyz")!.Value == "0 0 1",
+    "URDF has two links and the revolute joint (continuous, Z axis)");
+Check(Math.Abs(massArm - 4000 * 7.85e-6) < 1e-9 && linksX.All(l => File.Exists(Path.Combine(Path.GetDirectoryName(urdfPath)!, l.Element("visual")!.Element("geometry")!.Element("mesh")!.Attribute("filename")!.Value))),
+    $"URDF links carry steel mass ({massArm:0.#####} kg) and STL meshes");
+var statusTask = w.RunIsaac("isaac_status");
+for (int k = 0; k < 500 && !statusTask.IsCompleted; k++) { Pump(1); Thread.Sleep(10); }
+var status = statusTask.IsCompleted ? statusTask.Result : "(timeout)";
+Check(status.Contains("연결할 수 없습니다"), "without Isaac Sim running, the link reports that it cannot connect");
+Key(Avalonia.Input.Key.Escape);
+
+// ================= data panel =================
+w.ToggleDataPanel();
+Pump();
+Check(w.DataPanelVisible && w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "데이터 패널"), "the data panel opens from the application bar");
+if (Directory.Exists(Path.Combine(testExchange, "cloud", "XL_430_new")))
+{
+    Shot("data_panel");
+    Click(Text("XL_430_new"));
+    Check(w.State.Bodies.Count > 20, "a Fusion cloud design opens from the data panel");
+}
+w.ToggleDataPanel();
 
 Console.WriteLine(failures.Count == 0 ? "ALL PASSED" : $"{failures.Count} FAILED");
 return failures.Count == 0 ? 0 : 1;

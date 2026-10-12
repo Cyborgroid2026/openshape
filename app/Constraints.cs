@@ -12,6 +12,8 @@ public sealed class SketchConstraint
     public string Kind { get; set; } = "coincident";
     public int[] Refs { get; set; } = Array.Empty<int>();
     public double Value { get; set; }
+    /// <summary>Expression driving a dimension (user parameters), or null.</summary>
+    public string? Expression { get; set; }
 
     public static bool IsDimension(string kind) => kind is "distance" or "diameter" or "angle";
 
@@ -27,6 +29,8 @@ public sealed class SketchConstraint
         "midpoint" => "중간점",
         "concentric" => "동심",
         "pointonline" => "점-선 일치",
+        "tangent" => "접선",
+        "symmetric" => "대칭",
         "distance" => "거리 치수",
         "diameter" => "지름 치수",
         "angle" => "각도 치수",
@@ -111,6 +115,38 @@ public static unsafe class SketchSolver
     /// of freedom, or -1 (with the sketch unchanged) when the constraints cannot be satisfied.
     /// </summary>
     public static int Solve(SketchFeature s, IReadOnlyCollection<int>? draggedRefs = null)
+    {
+        // tangency is solved as "centre-to-line distance = radius", so repeat while radii settle
+        bool tangents = s.Constraints.Any(c => c.Kind == "tangent");
+        int dof = SolveOnce(s, draggedRefs);
+        for (int i = 0; tangents && dof >= 0 && i < 6; i++)
+        {
+            var before = s.Entities.Select(e => e.P.ToArray()).ToList();
+            dof = SolveOnce(s, draggedRefs);
+            bool moved = s.Entities.Select((e, k) => e.P.Zip(before[k], (a, b) => Math.Abs(a - b)).DefaultIfEmpty(0).Max()).DefaultIfEmpty(0).Max() > 1e-9;
+            if (!moved) break;
+        }
+        return dof;
+    }
+
+    /// <summary>Radius of a circle, polygon or arc ref.</summary>
+    public static double Radius(SketchFeature s, int r)
+    {
+        var e = s.Entities[Ent(r)];
+        return e.Kind == "arc" ? ArcCenter(e).Dist(new P2(e.P[0], e.P[1])) : e.P[2];
+    }
+
+    /// <summary>SolveSpace's signed point-line distance: keep the circle on the side of the line it is on now.</summary>
+    private static double Side(SketchFeature s, int line, int circle)
+    {
+        if (Segment(s, line) is not { } l || Point(s, CenterRef(s, circle)) is not { } c) return 1;
+        double cross = (l.b.X - l.a.X) * (c.Y - l.a.Y) - (l.b.Y - l.a.Y) * (c.X - l.a.X);
+        return cross > 0 ? -1 : 1;
+    }
+
+    private static int CenterRef(SketchFeature s, int r) => s.Entities[Ent(r)].Kind == "arc" ? Ref(Ent(r), 2) : Ref(Ent(r), 0);
+
+    private static int SolveOnce(SketchFeature s, IReadOnlyCollection<int>? draggedRefs)
     {
         var prm = new List<double>();
         var pts = new List<int>();
@@ -241,6 +277,15 @@ public static unsafe class SketchSolver
                 case "fix": Con(10, pa: PointIdx(r[0])); break;
                 case "pointonline": Con(11, pa: PointIdx(r[0]), ea: LineIdx(r[1])); break;
                 case "midpoint": Con(13, pa: PointIdx(r[0]), ea: LineIdx(r[1])); break;
+                case "symmetric": Con(15, pa: PointIdx(r[0]), pb: PointIdx(r[1]), ea: LineIdx(r[2])); break;
+                case "tangent":
+                {
+                    bool l0 = lineOf.ContainsKey(r[0]), l1 = lineOf.ContainsKey(r[1]);
+                    if (l0 && !l1) Con(14, Side(s, r[0], r[1]) * Radius(s, r[1]), pa: PointIdx(CenterRef(s, r[1])), ea: LineIdx(r[0]));
+                    else if (l1 && !l0) Con(14, Side(s, r[1], r[0]) * Radius(s, r[0]), pa: PointIdx(CenterRef(s, r[0])), ea: LineIdx(r[1]));
+                    else if (!l0 && !l1) Con(3, Radius(s, r[0]) + Radius(s, r[1]), PointIdx(CenterRef(s, r[0])), PointIdx(CenterRef(s, r[1])));
+                    break;
+                }
             }
         }
         if (cons.Count == 0 && (draggedRefs == null || draggedRefs.Count == 0)) return Dof(s);

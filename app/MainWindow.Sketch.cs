@@ -8,7 +8,7 @@ namespace OpenShape;
 /// <summary>Sketch constraints, dimensions and point dragging.</summary>
 public sealed partial class MainWindow
 {
-    private static readonly string[] ConstraintTools = { "c_hv", "c_coincident", "c_parallel", "c_perpendicular", "c_equal", "c_fix", "c_midpoint", "c_concentric" };
+    private static readonly string[] ConstraintTools = { "c_hv", "c_coincident", "c_parallel", "c_perpendicular", "c_equal", "c_fix", "c_midpoint", "c_concentric", "c_tangent", "c_symmetric" };
     private readonly List<(Rect box, int index)> _dimBoxes = new();
 
     /// <summary>Points that can be snapped to, with their refs (-1 = sketch origin, -3 = no ref).</summary>
@@ -99,12 +99,36 @@ public sealed partial class MainWindow
     }
 
     /// <summary>Add constraints (one undo step); rolls back when the sketch cannot satisfy them.</summary>
-    public bool AddConstraints(params SketchConstraint[] cs)
+    public bool AddConstraints(params SketchConstraint[] cs) => AddConstraintsKeeping(null, cs);
+
+    /// <summary>Add constraints, preferring to keep the <paramref name="keep"/> points where they are (like Fusion, the first pick stays).</summary>
+    public bool AddConstraintsKeeping(IReadOnlyCollection<int>? keep, params SketchConstraint[] cs)
     {
         var s = _sk!;
         s.Remember();
         s.Draft.Constraints.AddRange(cs);
-        if (SolveSketch()) return true;
+        if (keep is { Count: > 0 })
+        {
+            // solve with the kept points temporarily fixed so only the other picks move; a pin that
+            // would over-constrain (SolveSpace treats redundancy as failure) is simply left out
+            var backup = s.Draft.Entities.Select(e => e.Clone()).ToList();
+            var pins = new List<SketchConstraint>();
+            foreach (var r in keep)
+            {
+                // every attempt starts from the original geometry, so pins hold the original positions
+                s.Draft.Entities = backup.Select(e => e.Clone()).ToList();
+                var pin = new SketchConstraint { Kind = "fix", Refs = new[] { r } };
+                s.Draft.Constraints.Add(pin);
+                if (SolveSketch()) pins.Add(pin);
+                else s.Draft.Constraints.Remove(pin);
+            }
+            s.Draft.Entities = backup.Select(e => e.Clone()).ToList();
+            bool ok = SolveSketch();
+            foreach (var pin in pins) s.Draft.Constraints.Remove(pin);
+            if (ok && SolveSketch()) return true;
+            s.Draft.Entities = backup;
+        }
+        if (SolveSketch(keep)) return true;
         s.Restore(s.History[^1]);
         s.History.RemoveAt(s.History.Count - 1);
         SolveSketch();
@@ -204,6 +228,14 @@ public sealed partial class MainWindow
                 }
                 reset = true;
                 break;
+            case "c_tangent" when n == 2:
+                if (kinds.Contains("circle") && kinds.All(k => k is "line" or "circle") && !(kinds[0] == "line" && kinds[1] == "line")) done = C("tangent", p[0], p[1]);
+                reset = true;
+                break;
+            case "c_symmetric" when n == 3:
+                if (kinds[0] == "point" && kinds[1] == "point" && kinds[2] == "line") done = C("symmetric", p[0], p[1], p[2]);
+                reset = true;
+                break;
             case "dimension":
                 if (n == 1 && kind == "circle")
                 {
@@ -248,7 +280,10 @@ public sealed partial class MainWindow
         if (done != null)
         {
             if (SketchConstraint.IsDimension(done.Kind)) done.Value = SketchSolver.Measure(s.Draft, done);
-            if (AddConstraints(done))
+            // keep the first picked item in place; for symmetry keep the mirror line
+            var keep = KeepPoints(done.Kind == "symmetric" ? done.Refs[2] : p[0], done.Kind == "symmetric" ? "line" : kinds[0]);
+            if (done.Kind == "symmetric") keep.Add(done.Refs[0]);
+            if (AddConstraintsKeeping(keep, done))
             {
                 SetPrompt(null);
                 if (SketchConstraint.IsDimension(done.Kind)) EditDimension(s.Draft.Constraints.Count - 1, screen);
@@ -259,6 +294,17 @@ public sealed partial class MainWindow
     }
 
     private readonly List<string> _pickKinds = new();
+
+    /// <summary>Point refs that pin a picked item: a point, a line's two ends, or a circle's centre.</summary>
+    private List<int> KeepPoints(int r, string kind)
+    {
+        if (kind == "point") return new List<int> { r };
+        int e = SketchSolver.Ent(r), k = SketchSolver.Sub(r);
+        var en = _sk!.Draft.Entities[e];
+        return kind == "line"
+            ? en.Kind == "rect" ? new List<int> { SketchSolver.Ref(e, k), SketchSolver.Ref(e, (k + 1) % 4) } : new List<int> { SketchSolver.Ref(e, 0), SketchSolver.Ref(e, 1) }
+            : new List<int> { en.Kind == "arc" ? SketchSolver.Ref(e, 2) : SketchSolver.Ref(e, 0) };
+    }
     private (int a, int b)? _pendingLineDim;
 
     /// <summary>Line-length dimension from the pending line pick (clicking empty space finishes it).</summary>
@@ -399,6 +445,12 @@ public sealed partial class MainWindow
                     case "angle" when SketchSolver.Segment(s.Draft, c.Refs[0]) is { } l1 && S((l1.a + l1.b) * 0.5) is { } m:
                         Label(F(c.Value) + "°", m + new Vector(0, -16), i, true);
                         break;
+                    case "tangent" or "symmetric":
+                    {
+                        var at = c.Kind == "symmetric" ? SketchSolver.Segment(s.Draft, c.Refs[2]) is { } sg2 ? (sg2.a + sg2.b) * 0.5 : (P2?)null : SketchSolver.Point(s.Draft, c.Refs[1] >= 0 && s.Draft.Entities[SketchSolver.Ent(c.Refs[1])].Kind != "line" ? c.Refs[1] : c.Refs[0]);
+                        if (S(at) is { } sp) Label(c.Kind == "tangent" ? "⌒" : "⇋", sp + new Vector(12, -14), i, false);
+                        break;
+                    }
                     case "horizontal" or "vertical" or "parallel" or "perpendicular" or "equal" or "midpoint" or "pointonline":
                     {
                         int lineRef = c.Kind is "midpoint" or "pointonline" ? c.Refs[1] : c.Refs[0];
