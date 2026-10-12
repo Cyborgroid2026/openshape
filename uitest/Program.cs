@@ -410,5 +410,69 @@ if (File.Exists(cloud))
 else Console.WriteLine("SKIP  Fusion cloud STEP not found");
 
 
+// ================= components and joints =================
+w.SaveTo(Path.Combine(outDir, "before_joints.osc"));
+await w.NewDesign();
+Pump();
+Check(w.State.Bodies.Count == 0, "new design starts empty");
+void Box(double l, double wd, double h, double x)
+{
+    w.RunCommand("box");
+    Pump();
+    SetField("길이", l.ToString());
+    SetField("너비", wd.ToString());
+    SetField("높이", h.ToString());
+    SetField("X", x.ToString());
+    w.RefreshPreview();
+    Click(Text("확인"));
+}
+Box(60, 60, 10, 0);
+Box(10, 10, 40, 100);
+var plateId = w.State.Bodies[0].Id;
+var armId = w.State.Bodies[1].Id;
+w.FitAll();
+Pump();
+Click(Text(w.BodyName(plateId)));
+w.RunCommand("newcomponent");
+Pump();
+Click(Text(w.BodyName(armId)));
+w.RunCommand("newcomponent");
+Pump();
+Check(w.Document.Components.Count == 2 && w.Document.Components[0].Grounded, "bodies become components (the first one grounded)");
+w.RunCommand("joint");
+Pump();
+Check(w.Command?.SelectKind == "jointA", "joint dialog asks for component 1's origin");
+w.View.SetView(-55, -30);
+Pump();
+Click(World(new V3(100, 0, 0)));
+w.View.SetView(-55, 35);
+Pump();
+Click(World(new V3(10, 10, 10)));
+Check(w.Command?.Draft is JointFeature { PickA.Length: 3, PickB.Length: 3 }, "both joint origins picked on faces");
+SetCombo("유형", 1);
+SetField("각도", "45");
+w.RefreshPreview();
+Shot("joint_preview");
+Click(Text("확인"));
+var arm = w.State.Find(armId)!.Solid.Info;
+Check(Math.Abs(arm.Min.Z - 10) < 1e-6 && Math.Abs((arm.Min.X + arm.Max.X) / 2) < 1e-6 && Math.Abs(arm.Max.X - arm.Min.X - 10 * Math.Sqrt(2)) < 1e-3,
+    $"revolute joint seats the arm on the plate centre, turned 45° (z {arm.Min.Z:0.###}, width {arm.Max.X - arm.Min.X:0.###})");
+Check(w.State.Joints.Count == 1 && w.State.Joints[0].Type == "revolute", "the joint is listed for the browser and export");
+w.EditFeature(w.Document.Features.Count - 1);
+Pump();
+SetField("각도", "90");
+w.RefreshPreview();
+Click(Text("확인"));
+arm = w.State.Find(armId)!.Solid.Info;
+Check(Math.Abs(arm.Max.X - arm.Min.X - 10) < 1e-3, "driving the joint to 90° turns the arm square again");
+w.View.SetView(-55, 28);
+w.FitAll();
+Shot("joint");
+var usdPhys = Path.Combine(outDir, "robot.usda");
+Check(w.ExportTo(usdPhys, 4, false) == 2, "USD with physics exports both components");
+var usdText = File.ReadAllText(usdPhys);
+Check(usdText.Contains("PhysicsRevoluteJoint") && usdText.Contains("PhysicsRigidBodyAPI") && usdText.Contains("PhysicsFixedJoint") && usdText.Contains("physics:body0 = </World/"),
+    "USD has rigid bodies, the revolute joint and the grounded base for Isaac Sim");
+
 Console.WriteLine(failures.Count == 0 ? "ALL PASSED" : $"{failures.Count} FAILED");
 return failures.Count == 0 ? 0 : 1;

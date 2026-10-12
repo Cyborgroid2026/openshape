@@ -564,6 +564,59 @@ API int ok_face_frame(uint32_t h, double x, double y, double z, double* out) {
     }
 }
 
+/// Joint origin on the face nearest to (x, y, z): planar faces give their centre and normal,
+/// cylinders/cones their axis (at the picked height), spheres their centre. out = origin, axis.
+API int ok_joint_frame(uint32_t h, double x, double y, double z, double* out) {
+    TopoDS_Shape s;
+    if (!get(h, s)) return 0;
+    try {
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(s, TopAbs_FACE, faces);
+        gp_Pnt pick(x, y, z);
+        int f = nearest(faces, pick, 0.5 + 1e-3 * diag(s));
+        if (f == 0) return 0;
+        const TopoDS_Face& face = TopoDS::Face(faces(f));
+        BRepAdaptor_Surface surf(face, true);
+        gp_Pnt o;
+        gp_Dir d;
+        switch (surf.GetType()) {
+            case GeomAbs_Plane: {
+                GProp_GProps g;
+                BRepGProp::SurfaceProperties(face, g);
+                o = g.CentreOfMass();
+                d = surf.Plane().Axis().Direction();
+                if (face.Orientation() == TopAbs_REVERSED) d.Reverse();
+                break;
+            }
+            case GeomAbs_Cylinder:
+            case GeomAbs_Cone: {
+                gp_Ax1 ax = surf.GetType() == GeomAbs_Cylinder ? surf.Cylinder().Axis() : surf.Cone().Axis();
+                d = ax.Direction();
+                gp_Vec v(ax.Location(), pick);
+                o = ax.Location().Translated(gp_Vec(d) * v.Dot(gp_Vec(d)));
+                break;
+            }
+            case GeomAbs_Sphere:
+                o = surf.Sphere().Location();
+                d = gp::DZ();
+                break;
+            case GeomAbs_Torus:
+                o = surf.Torus().Location();
+                d = surf.Torus().Axis().Direction();
+                break;
+            default:
+                o = pick;
+                d = gp::DZ();
+                break;
+        }
+        double r[6] = {o.X(), o.Y(), o.Z(), d.X(), d.Y(), d.Z()};
+        std::memcpy(out, r, sizeof r);
+        return (int)surf.GetType() + 1;
+    } catch (...) {
+        return 0;
+    }
+}
+
 // ------------------------------------------------------------------- files
 
 /// Read STEP (kind 0) or IGES (1); returns a handle to everything read.

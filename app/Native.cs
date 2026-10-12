@@ -48,6 +48,7 @@ internal static unsafe class Occt
     [DllImport(Lib)] public static extern int ok_edges_points();
     [DllImport(Lib)] public static extern void ok_edges_copy(double* xyz, int* counts);
     [DllImport(Lib)] public static extern int ok_face_frame(uint h, double x, double y, double z, double* out12);
+    [DllImport(Lib)] public static extern int ok_joint_frame(uint h, double x, double y, double z, double* out6);
     [DllImport(Lib)] public static extern uint ok_read(byte* path, int kind);
     [DllImport(Lib)] public static extern int ok_solids(uint h, uint* outHandles, int max);
     [DllImport(Lib)] public static extern int ok_write_step(uint* hs, int n, byte* path);
@@ -251,6 +252,25 @@ public sealed unsafe class Solid
         double* o = stackalloc double[12];
         if (Occt.ok_face_frame(Shape, p.X, p.Y, p.Z, o) == 0) return null;
         return new PlaneFrame(new V3(o[0], o[1], o[2]), new V3(o[3], o[4], o[5]), new V3(o[6], o[7], o[8]), new V3(o[9], o[10], o[11]));
+    }
+
+    /// <summary>Joint origin and axis on the face at the point (face centre/normal, cylinder axis, sphere centre).</summary>
+    public (V3 origin, V3 axis)? JointFrame(V3 p)
+    {
+        double* o = stackalloc double[6];
+        if (Occt.ok_joint_frame(Shape, p.X, p.Y, p.Z, o) == 0) return null;
+        return (new V3(o[0], o[1], o[2]), new V3(o[3], o[4], o[5]).Norm());
+    }
+
+    /// <summary>Display triangles (9 doubles each) of the solid.</summary>
+    public double[] Triangles()
+    {
+        uint h = Handle;
+        int n = Native.osc_tris(h, null);
+        var t = new double[Math.Max(0, n) * 9];
+        if (n > 0)
+            fixed (double* p = t) Native.osc_tris(h, p);
+        return t;
     }
 
     /// <summary>Solids from a STEP/IGES/STL/OBJ file.</summary>

@@ -294,6 +294,7 @@ public sealed class ProfileRef
 [JsonDerivedType(typeof(ImportFeature), "import")]
 [JsonDerivedType(typeof(FilletFeature), "fillet")]
 [JsonDerivedType(typeof(ShellFeature), "shell")]
+[JsonDerivedType(typeof(JointFeature), "joint")]
 public abstract class Feature
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..10];
@@ -448,6 +449,39 @@ public sealed class ShellFeature : Feature
     public override string Command => "shell";
 }
 
+/// <summary>
+/// Joint: moves component 1 so its joint origin meets component 2's, then applies the motion
+/// (rotation about / sliding along the joint axis). Origins are re-found from the picked points.
+/// </summary>
+public sealed class JointFeature : Feature
+{
+    public string BodyA { get; set; } = "";
+    public double[] PickA { get; set; } = Array.Empty<double>();
+    public string BodyB { get; set; } = "";
+    public double[] PickB { get; set; } = Array.Empty<double>();
+    public string Type { get; set; } = "revolute";   // rigid, revolute, slider, cylindrical
+    public double Angle { get; set; }
+    public double Distance { get; set; }
+    public double Offset { get; set; }
+    public bool Flip { get; set; }
+    public double? LowerLimit { get; set; }
+    public double? UpperLimit { get; set; }
+    public override string Command => "joint";
+
+    public static string TypeName(string t) => t switch { "rigid" => "강체", "slider" => "슬라이더", "cylindrical" => "원통형", _ => "회전" };
+}
+
+public sealed class ComponentDef
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N")[..10];
+    public string Name { get; set; } = "구성요소1";
+    public List<string> Bodies { get; set; } = new();
+    public bool Grounded { get; set; }
+}
+
+/// <summary>A joint after evaluation (for display and physics export).</summary>
+public sealed record JointInfo(string Name, string Type, V3 Origin, V3 Axis, List<string> Moving, List<string> Fixed, double? Lower, double? Upper);
+
 public sealed class ImportFeature : Feature
 {
     public string Path { get; set; } = "";
@@ -470,6 +504,7 @@ public sealed class Doc
     public List<Feature> Features { get; set; } = new();
     public int Marker { get; set; }
     public Dictionary<string, string> BodyNames { get; set; } = new();
+    public List<ComponentDef> Components { get; set; } = new();
     public Dictionary<string, string> BodyColors { get; set; } = new();
     public HashSet<string> HiddenBodies { get; set; } = new();
     public bool OriginVisible { get; set; }
@@ -500,6 +535,7 @@ public sealed class Doc
         ["chamfer"] = "모따기",
         ["shell"] = "쉘",
         ["insert"] = "삽입",
+        ["joint"] = "접합",
     };
 
     /// <summary>Next free default name for a feature of this command ("돌출1", "돌출2" ...).</summary>
@@ -525,6 +561,7 @@ public sealed class ModelState
 {
     public List<Body> Bodies { get; } = new();
     public List<SketchFeature> Sketches { get; } = new();
+    public List<JointInfo> Joints { get; } = new();
     public Dictionary<string, List<Profile>> SketchProfiles { get; } = new();
 
     public ModelState Clone()
@@ -532,6 +569,7 @@ public sealed class ModelState
         var s = new ModelState();
         s.Bodies.AddRange(Bodies.Select(b => b.With(b.Solid)));
         s.Sketches.AddRange(Sketches);
+        s.Joints.AddRange(Joints);
         foreach (var (k, v) in SketchProfiles) s.SketchProfiles[k] = v;
         return s;
     }
@@ -541,6 +579,32 @@ public sealed class ModelState
 
 public static class Evaluator
 {
+    /// <summary>Components of the document being evaluated (joints move a whole component).</summary>
+    public static IReadOnlyList<ComponentDef> Components { get; set; } = Array.Empty<ComponentDef>();
+
+    /// <summary>The bodies that move together with <paramref name="body"/>.</summary>
+    public static List<string> GroupOf(string body)
+    {
+        var c = Components.FirstOrDefault(c => c.Bodies.Contains(body));
+        return c != null ? c.Bodies.ToList() : new List<string> { body };
+    }
+
+    /// <summary>Rotation about <paramref name="center"/> turning direction a onto direction b.</summary>
+    public static Affine Align(V3 center, V3 a, V3 b)
+    {
+        a = a.Norm();
+        b = b.Norm();
+        var axis = a.Cross(b);
+        double dot = Math.Clamp(a.Dot(b), -1, 1);
+        if (axis.Length < 1e-9)
+        {
+            if (dot > 0) return Affine.Identity;
+            var perp = Math.Abs(a.X) < 0.9 ? a.Cross(V3.UnitX) : a.Cross(V3.UnitY);
+            return Affine.Rotation(center, perp, 180);
+        }
+        return Affine.Rotation(center, axis, Math.Acos(dot) * 180 / Math.PI);
+    }
+
     /// <summary>Run features [from, to) on top of <paramref name="start"/> (which is not modified).</summary>
     public static ModelState Run(IReadOnlyList<Feature> features, int to, ModelState? start = null, int from = 0)
     {
@@ -747,6 +811,30 @@ public static class Evaluator
                 var pts = fl.AllEdges ? new List<V3>() : fl.Edges.Select(e => new V3(e[0], e[1], e[2])).ToList();
                 if (fl.Size <= 0) throw new InvalidOperationException(fl.Chamfer ? "거리는 0보다 커야 합니다." : "반지름은 0보다 커야 합니다.");
                 Replace(s, body, fl.Chamfer ? body.Solid.Chamfer(pts, fl.Size) : body.Solid.Fillet(pts, fl.Size));
+                break;
+            }
+
+            case JointFeature j:
+            {
+                var a = s.Find(j.BodyA) ?? throw new InvalidOperationException("구성요소 1의 접합 원점을 선택하세요.");
+                var b = s.Find(j.BodyB) ?? throw new InvalidOperationException("구성요소 2의 접합 원점을 선택하세요.");
+                if (j.PickA.Length != 3 || j.PickB.Length != 3) throw new InvalidOperationException("접합 원점을 선택하세요.");
+                var moving = GroupOf(j.BodyA);
+                var fixedGroup = GroupOf(j.BodyB);
+                if (moving.Contains(j.BodyB)) throw new InvalidOperationException("서로 다른 구성요소를 선택하세요.");
+                var fa = a.Solid.JointFrame(new V3(j.PickA[0], j.PickA[1], j.PickA[2])) ?? throw new InvalidOperationException("구성요소 1의 접합 원점을 찾을 수 없습니다.");
+                var fb = b.Solid.JointFrame(new V3(j.PickB[0], j.PickB[1], j.PickB[2])) ?? throw new InvalidOperationException("구성요소 2의 접합 원점을 찾을 수 없습니다.");
+                var nb = fb.axis;
+                var origin = fb.origin + nb * j.Offset;
+                double angle = j.Type is "revolute" or "cylindrical" or "rigid" ? j.Angle : 0;
+                double slide = j.Type is "slider" or "cylindrical" ? j.Distance : 0;
+                var m = Align(fa.origin, fa.axis, j.Flip ? nb : -nb)
+                    .Then(Affine.Translation(origin - fa.origin))
+                    .Then(Affine.Rotation(origin, nb, angle))
+                    .Then(Affine.Translation(nb * slide));
+                foreach (var id in moving)
+                    if (s.Find(id) is { } body) Replace(s, body, body.Solid.Transform(m));
+                s.Joints.Add(new JointInfo(j.Name, j.Type, origin + nb * slide, nb, moving, fixedGroup, j.LowerLimit, j.UpperLimit));
                 break;
             }
 

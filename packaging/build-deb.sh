@@ -2,7 +2,7 @@
 # Build the Rust engine and the self-contained C# app, run the tests, then package a .deb.
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION=0.3.0
+VERSION=0.4.0
 ARCH=amd64
 PKG=openshape_${VERSION}_${ARCH}
 STAGE="$ROOT/build/$PKG"
@@ -71,8 +71,9 @@ Description: Parametric 3D CAD for Ubuntu
  follows Autodesk Fusion (toolbar, browser, timeline, ViewCube, navigation
  bar): sketches (also on model faces), extrude, revolve, primitives,
  booleans, fillet, chamfer, shell, sketch dimensions and constraints
- (SolveSpace solver), move, mirror, patterns, STEP/IGES import,
- STEP/STL/OBJ/USD export. UI in C# (Avalonia), B-rep geometry by
+ (SolveSpace solver), components and rigid/revolute/slider
+ joints, move, mirror, patterns, STEP/IGES import,
+ STEP/STL/OBJ/USD export (USD with UsdPhysics joints for Isaac Sim). UI in C# (Avalonia), B-rep geometry by
  OpenCASCADE, display and mesh I/O in Rust.
  Contains no Autodesk code or assets.
 CONTROL

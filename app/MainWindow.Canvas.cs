@@ -315,6 +315,21 @@ public sealed partial class MainWindow
                 if (View.Project(new V3(f[0], f[1], f[2])) is { } s)
                     ctx.DrawEllipse(new SolidColorBrush(Color.FromRgb(6, 150, 215)), new Pen(Brushes.White, 1.5), s, 5, 5);
         if (_hoverEdge != null) Line(_hoverEdge, new Pen(new SolidColorBrush(Color.FromArgb(200, 90, 180, 255)), 3));
+        // joints: a small disc with the axis, like Fusion's joint glyphs
+        void Joint(V3 o, V3 axis, Color col)
+        {
+            if (View.Project(o) is not { } so) return;
+            double len = View.Cam.Distance * 0.06;
+            if (View.Project(o + axis * len) is { } sa) ctx.DrawLine(new Pen(new SolidColorBrush(col), 2), so, sa);
+            ctx.DrawEllipse(Brushes.White, new Pen(new SolidColorBrush(col), 2), so, 7, 7);
+            ctx.DrawEllipse(new SolidColorBrush(col), null, so, 3, 3);
+        }
+        foreach (var j in State.Joints) Joint(j.Origin, j.Axis, Color.FromRgb(60, 60, 60));
+        if (_cmd?.Draft is JointFeature jd && _cmd.Base is { } bs)
+        {
+            if (jd.PickA.Length == 3 && bs.Find(jd.BodyA)?.Solid.JointFrame(new V3(jd.PickA[0], jd.PickA[1], jd.PickA[2])) is { } fa) Joint(fa.origin, fa.axis, Color.FromRgb(6, 150, 215));
+            if (jd.PickB.Length == 3 && bs.Find(jd.BodyB)?.Solid.JointFrame(new V3(jd.PickB[0], jd.PickB[1], jd.PickB[2])) is { } fb) Joint(fb.origin, fb.axis, Color.FromRgb(230, 120, 20));
+        }
     }
 
     private void OnCanvasHover(Point p)
@@ -382,6 +397,15 @@ public sealed partial class MainWindow
         if (_cmd != null)
         {
             if (_cmd.SelectKind == "edges") { if (HitEdge(p) is { } he) CommandPickEdge(he.body, he.point); }
+            else if (_cmd.SelectKind is "jointA" or "jointB")
+            {
+                var (fi, ft, face) = View.PickFace(p);
+                if (fi >= 0 && face > 0 && fi < _itemBodies.Count)
+                {
+                    var (o, d) = View.Ray(p);
+                    CommandPickJoint(_itemBodies[fi], o + d * ft);
+                }
+            }
             else if (_cmd.SelectKind == "faces")
             {
                 var (fi, ft, face) = View.PickFace(p);
@@ -493,7 +517,7 @@ public sealed partial class MainWindow
         if (editIndex >= 0) draft = (SketchFeature)_doc.Features[editIndex].Copy();
         else draft = new SketchFeature { Name = _doc.NextName("sketch"), Plane = plane, Offset = _pendingOffset, Custom = face?.ToArray() };
         draft.Visible = true;
-        var baseState = Evaluator.Run(_doc.Features, editIndex >= 0 ? editIndex : _doc.Marker);
+        var baseState = Eval(_doc.Features, editIndex >= 0 ? editIndex : _doc.Marker);
         _sk = new SketchSession { Draft = draft, EditIndex = editIndex, Base = baseState };
         SolveSketch();
         _preview = baseState;

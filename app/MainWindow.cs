@@ -112,11 +112,18 @@ public sealed partial class MainWindow : Window
     public IReadOnlyCollection<string> SelectedBodies => _selBodies;
     public IReadOnlyCollection<ProfileRef> SelectedProfiles => _selProfiles;
 
+    /// <summary>Evaluate features with this document's components.</summary>
+    private ModelState Eval(IReadOnlyList<Feature> features, int to, ModelState? start = null, int from = 0)
+    {
+        Evaluator.Components = _doc.Components;
+        return Evaluator.Run(features, to, start, from);
+    }
+
     /// <summary>Re-evaluate the timeline up to the marker and refresh every view.</summary>
     public void Rebuild()
     {
         _doc.Marker = Math.Clamp(_doc.Marker, 0, _doc.Features.Count);
-        _state = Evaluator.Run(_doc.Features, _doc.Marker);
+        _state = Eval(_doc.Features, _doc.Marker);
         foreach (var b in _state.Bodies)
             if (!_doc.BodyNames.ContainsKey(b.Id))
             {
@@ -412,7 +419,7 @@ public sealed partial class MainWindow : Window
         ["finish"] = "스케치 마침",
     };
 
-    private static readonly HashSet<string> Unsupported = new() { "newcomponent", "joint", "section", "parameters", "trim", "presspull" };
+    private static readonly HashSet<string> Unsupported = new() { "section", "parameters", "trim", "presspull" };
 
     /// <summary>One toolbar group: a row of big icons with the group name (and ▾ menu) underneath.</summary>
     private Control Group(string title, string[] shown, string[] menu)
@@ -613,7 +620,35 @@ public sealed partial class MainWindow : Window
             foreach (var ax in new[] { "X", "Y", "Z" })
                 _browserRows.Children.Add(BrowserRow(2, null, null, null, Icons.Line("axis", 14), ax, false, false));
         }
-        var bodies = State.Bodies;
+        foreach (var comp in _doc.Components)
+        {
+            var c = comp;
+            var cb = State.Bodies.Where(b => c.Bodies.Contains(b.Id)).ToList();
+            if (cb.Count == 0) continue;
+            string key = "comp:" + c.Id;
+            bool vis = cb.Any(b => !_doc.HiddenBodies.Contains(b.Id));
+            _browserRows.Children.Add(BrowserRow(1, key, vis, () =>
+            {
+                foreach (var b in cb) { if (vis) _doc.HiddenBodies.Add(b.Id); else _doc.HiddenBodies.Remove(b.Id); }
+                RebuildBrowser();
+                UpdateItems();
+            }, Icons.Line("component", 16), c.Name + ":1" + (c.Grounded ? " (고정)" : ""), false, cb.All(b => _selBodies.Contains(b.Id)),
+                () => { _selBodies.Clear(); foreach (var b in cb) _selBodies.Add(b.Id); SelectionChanged(); }, null, e => ComponentMenu(c, e)));
+            if (_expanded.GetValueOrDefault(key))
+                foreach (var b in cb)
+                {
+                    var id = b.Id;
+                    bool bv = !_doc.HiddenBodies.Contains(id);
+                    _browserRows.Children.Add(BrowserRow(2, null, bv, () =>
+                    {
+                        if (!_doc.HiddenBodies.Remove(id)) _doc.HiddenBodies.Add(id);
+                        RebuildBrowser();
+                        UpdateItems();
+                    }, Icons.Line("body", 16), BodyName(id), false, _selBodies.Contains(id), () => SelectBody(id, false), () => RenameBody(id), e => BodyMenu(id, e)));
+                }
+        }
+        var inComponents = _doc.Components.SelectMany(c => c.Bodies).ToHashSet();
+        var bodies = State.Bodies.Where(b => !inComponents.Contains(b.Id)).ToList();
         bool anyVisible = bodies.Any(b => !_doc.HiddenBodies.Contains(b.Id));
         _browserRows.Children.Add(BrowserRow(1, "bodies", bodies.Count == 0 ? null : anyVisible, () =>
         {
@@ -634,6 +669,17 @@ public sealed partial class MainWindow : Window
                     UpdateItems();
                 }, Icons.Line("body", 16), BodyName(id), false, _selBodies.Contains(id), () => SelectBody(id, false), () => RenameBody(id), e => BodyMenu(id, e)));
             }
+        if (State.Joints.Count > 0)
+        {
+            _browserRows.Children.Add(BrowserRow(1, "joints", null, null, Icons.Line("folder", 16), "접합", false, false));
+            if (_expanded.GetValueOrDefault("joints", true))
+                foreach (var j in State.Joints)
+                {
+                    var jointName = j.Name;
+                    int index = _doc.Features.FindIndex(f => f.Name == jointName && f is JointFeature);
+                    _browserRows.Children.Add(BrowserRow(2, null, null, null, Icons.Color("joint", 16), $"{jointName} ({JointFeature.TypeName(j.Type)})", false, false, null, () => EditFeature(index)));
+                }
+        }
         var sketches = State.Sketches;
         _browserRows.Children.Add(BrowserRow(1, "sketches", sketches.Count == 0 ? null : sketches.Any(s => s.Visible), () =>
         {
@@ -684,6 +730,32 @@ public sealed partial class MainWindow : Window
         box.KeyDown += (_, e) => { if (e.Key == Key.Enter) flyout.Hide(); };
         flyout.ShowAt(_browserRows);
         box.Focus();
+    }
+
+    private void ComponentMenu(ComponentDef c, PointerPressedEventArgs e)
+    {
+        var m = new MenuFlyout();
+        void Item(string text, Action a)
+        {
+            var mi = new MenuItem { Header = text };
+            mi.Click += (_, _) => a();
+            m.Items.Add(mi);
+        }
+        Item(c.Grounded ? "고정 해제" : "고정", () => Commit(() => _doc.Components.First(x => x.Id == c.Id).Grounded = !c.Grounded));
+        Item("이름 바꾸기", () =>
+        {
+            var box = new TextBox { Text = c.Name, Width = 180 };
+            var flyout = new Flyout { Content = new StackPanel { Spacing = 6, Children = { Ui.Label("구성요소 이름"), box } } };
+            flyout.Closed += (_, _) =>
+            {
+                var t = (box.Text ?? "").Trim();
+                if (t.Length > 0 && t != c.Name) Commit(() => _doc.Components.First(x => x.Id == c.Id).Name = t);
+            };
+            flyout.ShowAt(_browserRows);
+            box.Focus();
+        });
+        Item("구성요소 해제", () => Commit(() => _doc.Components.RemoveAll(x => x.Id == c.Id)));
+        m.ShowAt((Control)e.Source!);
     }
 
     private void BodyMenu(string id, PointerPressedEventArgs e)
@@ -979,9 +1051,9 @@ public sealed partial class MainWindow : Window
     private void ShowAbout()
     {
         var panel = new CommandPanel("정보", null, () => CloseDialog(), null);
-        panel.AddText("OpenShape CAD 0.3.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
+        panel.AddText("OpenShape CAD 0.4.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
                       "Autodesk의 코드나 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다.\n\n" +
-                      "아직 지원하지 않는 기능: 누르기/당기기, 구성요소·조인트, 곡면·메쉬·판금 작업공간, 접선·대칭 구속, .f3d 직접 열기(클라우드 동기화의 STEP으로 열 수 있음)");
+                      "아직 지원하지 않는 기능: 누르기/당기기, 볼·핀-슬롯 조인트, 곡면·메쉬·판금 작업공간, 접선·대칭 구속, .f3d 직접 열기(클라우드 동기화의 STEP으로 열 수 있음)");
         ShowDialog(panel);
     }
 }

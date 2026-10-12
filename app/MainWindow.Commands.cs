@@ -129,6 +129,28 @@ public sealed partial class MainWindow
                 OpenCommand(new CombineFeature { Name = _doc.NextName("combine"), Target = sel.FirstOrDefault() ?? "", Tools = sel.Skip(1).ToList() }, -1);
                 break;
             }
+            case "newcomponent":
+            {
+                var ids = _selBodies.ToList();
+                if (ids.Count == 0)
+                {
+                    SetPrompt("구성요소로 만들 본체를 먼저 선택하세요.");
+                    break;
+                }
+                Commit(() =>
+                {
+                    foreach (var c in _doc.Components) c.Bodies.RemoveAll(ids.Contains);
+                    _doc.Components.RemoveAll(c => c.Bodies.Count == 0);
+                    int n = 1;
+                    while (_doc.Components.Any(c => c.Name == "구성요소" + n)) n++;
+                    _doc.Components.Add(new ComponentDef { Name = "구성요소" + n, Bodies = ids, Grounded = _doc.Components.Count == 0 });
+                });
+                SetPrompt(null);
+                break;
+            }
+            case "joint":
+                OpenCommand(new JointFeature { Name = _doc.NextName("joint") }, -1);
+                break;
             case "fillet" or "chamfer":
                 OpenCommand(new FilletFeature { Name = _doc.NextName(id), Chamfer = id == "chamfer", Size = id == "chamfer" ? 1 : 2 }, -1);
                 break;
@@ -196,13 +218,14 @@ public sealed partial class MainWindow
         CancelCommand();
         _pickPlane = false;
         SetPrompt(null);
-        var baseState = Evaluator.Run(_doc.Features, editIndex >= 0 ? editIndex : _doc.Marker);
+        var baseState = Eval(_doc.Features, editIndex >= 0 ? editIndex : _doc.Marker);
         _cmd = new CommandSession { Id = draft.Command, Draft = draft, EditIndex = editIndex, Base = baseState };
         _cmd.SelectKind = draft switch
         {
             ExtrudeFeature or RevolveFeature => "profiles",
             CombineFeature c => string.IsNullOrEmpty(c.Target) ? "target" : "tools",
             FilletFeature => "edges",
+            JointFeature => "jointA",
             ShellFeature => "faces",
             PrimitiveFeature => "",
             _ => "bodies",
@@ -331,6 +354,19 @@ public sealed partial class MainWindow
                 p.AddNumber("축척 계수", sc.Factor, "", v => sc.Factor = v, Changed);
                 break;
 
+            case JointFeature jt:
+                p.AddHeader("위치");
+                Select("구성요소 1", "jointA", jt.PickA.Length == 3 ? 1 : 0, "원점", () => { jt.PickA = Array.Empty<double>(); jt.BodyA = ""; });
+                Select("구성요소 2", "jointB", jt.PickB.Length == 3 ? 1 : 0, "원점", () => { jt.PickB = Array.Empty<double>(); jt.BodyB = ""; });
+                p.AddHeader("동작");
+                var types = new[] { "rigid", "revolute", "slider", "cylindrical" };
+                p.AddCombo("유형", types.Select(JointFeature.TypeName).ToArray(), Math.Max(0, Array.IndexOf(types, jt.Type)), i => { jt.Type = types[i]; BuildCommandPanel(); Changed(); });
+                if (jt.Type is "revolute" or "cylindrical" or "rigid") p.AddNumber("각도", jt.Angle, "deg", v => jt.Angle = v, Changed);
+                if (jt.Type is "slider" or "cylindrical") p.AddNumber("거리", jt.Distance, "mm", v => jt.Distance = v, Changed);
+                p.AddNumber("간격띄우기", jt.Offset, "mm", v => jt.Offset = v, Changed);
+                p.AddCheck("뒤집기", jt.Flip, v => { jt.Flip = v; Changed(); });
+                break;
+
             case FilletFeature fl:
                 p.AddInfo("유형", fl.Chamfer ? "모따기 - 동일 거리" : "모깎기 - 일정 반지름");
                 Select("모서리", "edges", fl.Edges.Count, "모서리", () => { fl.Edges.Clear(); fl.Body = ""; });
@@ -378,7 +414,7 @@ public sealed partial class MainWindow
             at = _doc.Marker;
             upto = _doc.Marker + 1;
         }
-        _preview = Evaluator.Run(list, upto, c.Base, at);
+        _preview = Eval(list, upto, c.Base, at);
         c.Panel?.SetError(draft.Error);
         UpdateItems();
         View.InvalidateVisual();
@@ -444,6 +480,25 @@ public sealed partial class MainWindow
         int existing = edge == null ? -1 : fl.Edges.FindIndex(e => DistToPolyline(new V3(e[0], e[1], e[2]), edge) < 1e-6 + 1e-4 * (edge[0] - edge[^1]).Length + 0.01);
         if (existing >= 0) fl.Edges.RemoveAt(existing);
         else fl.Edges.Add(new[] { point.X, point.Y, point.Z });
+        BuildCommandPanel();
+        RefreshPreview();
+    }
+
+    private void CommandPickJoint(string bodyId, V3 point)
+    {
+        if (_cmd?.Draft is not JointFeature j) return;
+        if (_cmd.SelectKind == "jointA")
+        {
+            j.BodyA = bodyId;
+            j.PickA = new[] { point.X, point.Y, point.Z };
+            _cmd.SelectKind = j.PickB.Length == 3 ? "" : "jointB";
+        }
+        else
+        {
+            j.BodyB = bodyId;
+            j.PickB = new[] { point.X, point.Y, point.Z };
+            _cmd.SelectKind = "";
+        }
         BuildCommandPanel();
         RefreshPreview();
     }
@@ -598,7 +653,7 @@ public sealed partial class MainWindow
         _cmd.Rebuild = () =>
         {
             var p = new CommandPanel("내보내기", "export", () => _ = ExportDialog(), CancelCommand, "내보내기");
-            p.AddCombo("유형", new[] { "STL 파일 (*.stl)", "OBJ 파일 (*.obj)", "USD 파일 (*.usda)", "STEP 파일 (*.step)" }, _exportFormat, i => _exportFormat = i);
+            p.AddCombo("유형", new[] { "STL 파일 (*.stl)", "OBJ 파일 (*.obj)", "USD 파일 (*.usda)", "STEP 파일 (*.step)", "USD 물리·접합 포함 (*.usda, Isaac Sim)" }, _exportFormat, i => _exportFormat = i);
             p.AddCombo("대상", new[] { "보이는 모든 본체", "선택한 본체" }, _exportSelected ? 1 : 0, i => _exportSelected = i == 1);
             p.AddText("단위는 mm입니다. USD는 Z 위쪽, metersPerUnit = 0.001로 저장되어 Isaac Sim에서 그대로 열 수 있습니다. STEP은 다른 CAD(Fusion 포함)에서 정확한 형상으로 열립니다.");
             ShowDialog(p);
@@ -608,7 +663,7 @@ public sealed partial class MainWindow
 
     private async Task ExportDialog()
     {
-        string ext = new[] { "stl", "obj", "usda", "step" }[_exportFormat];
+        string ext = new[] { "stl", "obj", "usda", "step", "usda" }[_exportFormat];
         var f = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "내보내기",
@@ -629,6 +684,7 @@ public sealed partial class MainWindow
         var bodies = State.Bodies.Where(b => !_doc.HiddenBodies.Contains(b.Id) && (!selectedOnly || _selBodies.Contains(b.Id)))
             .Select(b => (BodyName(b.Id), b.Solid)).ToList();
         if (bodies.Count == 0) return -1;
+        if (format == 4) return UsdPhysics.Write(path, State, _doc, b => BodyName(b)) ? bodies.Count : -1;
         return Solid.Export(bodies, path, (uint)format) ? bodies.Count : -1;
     }
 
