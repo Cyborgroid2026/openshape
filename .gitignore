@@ -1,0 +1,8 @@
+engine/target/
+app/bin/
+app/obj/
+uitest/bin/
+uitest/obj/
+build/
+build-uitest/
+dist/
