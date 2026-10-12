@@ -525,7 +525,7 @@ public sealed partial class MainWindow
         }
         if (_sk != null)
         {
-            Item("스케치 마침", "finish", () => FinishSketch(true));
+            Item("스케치 마무리", "finish", () => FinishSketch(true));
             Item("선", "line", () => RunCommand("line"));
             Item("2점 직사각형", "rect", () => RunCommand("rect"));
             Item("중심 지름 원", "circle", () => RunCommand("circle"));
@@ -900,7 +900,7 @@ public sealed partial class MainWindow
             BorderBrush = Ui.Brush("#9FD3A8"),
             BorderThickness = new Thickness(1),
             Margin = new Thickness(0, 6, 0, 0),
-            Child = Ui.Centered(new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6, Children = { Icons.Color("finish", 16), Ui.Label("스케치 마침", 12) } }),
+            Child = Ui.Centered(new StackPanel { Orientation = Avalonia.Layout.Orientation.Horizontal, Spacing = 6, Children = { Icons.Color("finish", 16), Ui.Label("스케치 마무리", 12) } }),
         }.Init();
         finish.Click += () => FinishSketch(true);
         panel.AddControl(finish);

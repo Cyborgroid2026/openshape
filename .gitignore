@@ -10,3 +10,4 @@ build-deps/
 occt/build/
 installer/bin/
 installer/obj/
+installer/native/target/

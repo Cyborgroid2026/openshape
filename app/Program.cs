@@ -56,7 +56,7 @@ public sealed class App : Application
     {
         RequestedThemeVariant = ThemeVariant.Light;
         Styles.Add(new FluentTheme());
-        var uiFont = new FontFamily("Noto Sans CJK KR, Noto Sans KR, NanumGothic, Ubuntu, DejaVu Sans");
+        var uiFont = new FontFamily("Ubuntu, Noto Sans CJK KR, Noto Sans KR, NanumGothic, DejaVu Sans");
         Styles.Add(new Style(x => x.OfType<Window>()) { Setters = { new Setter(TemplatedControl.FontFamilyProperty, uiFont) } });
         Styles.Add(new Style(x => x.OfType<PopupRoot>()) { Setters = { new Setter(TemplatedControl.FontFamilyProperty, uiFont) } });
     }

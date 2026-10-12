@@ -4,7 +4,7 @@ using System.Text.Json.Nodes;
 
 namespace OpenShapeInstaller;
 
-public sealed record ReleaseInfo(string Version, string AssetName, string AssetUrl, long Size, string Notes);
+public sealed record ReleaseInfo(string Version, string AssetName, string AssetUrl, long Size, string Notes, string? Sha256 = null);
 
 /// <summary>
 /// Streaming installer logic (like Autodesk's "Fusion Client Downloader"): finds the newest
@@ -68,15 +68,18 @@ public static class Updater
         var tag = o["tag_name"]!.GetValue<string>().TrimStart('v');
         var asset = (o["assets"] as JsonArray)?.FirstOrDefault(a => a!["name"]!.GetValue<string>().EndsWith("_amd64.deb"))
                     ?? throw new InvalidOperationException("릴리스에 .deb 파일이 없습니다.");
-        return new ReleaseInfo(tag, asset["name"]!.GetValue<string>(), asset["url"]!.GetValue<string>(), asset["size"]!.GetValue<long>(), o["body"]?.GetValue<string>() ?? "");
+        return new ReleaseInfo(tag, asset["name"]!.GetValue<string>(), asset["url"]!.GetValue<string>(), asset["size"]!.GetValue<long>(), o["body"]?.GetValue<string>() ?? "",
+            asset["digest"]?.GetValue<string>() is { } dg && dg.StartsWith("sha256:") ? dg[7..] : null);
     }
 
     /// <summary>Installed version (dpkg), or null.</summary>
     public static string? Installed() => RunCapture("dpkg-query", "-W -f=${Version} openshape") is { Length: > 0 } v ? v : null;
 
+    /// <summary>Debian version order (the Rust core implements dpkg's rules; plain comparison if it is missing).</summary>
     public static bool IsNewer(string latest, string? installed)
     {
         if (installed == null) return true;
+        if (NativeCore.CompareVersions(latest, installed) is { } c) return c > 0;
         return Version.TryParse(latest, out var a) && Version.TryParse(installed, out var b) ? a > b : latest != installed;
     }
 
@@ -106,6 +109,15 @@ public static class Updater
         }
         File.Move(path + ".part", path, true);
         if (new FileInfo(path).Length != r.Size) throw new InvalidOperationException("내려받은 파일 크기가 맞지 않습니다.");
+        if (r.Sha256 != null)
+        {
+            var sum = await Task.Run(() => NativeCore.Sha256File(path), ct);
+            if (!string.Equals(sum, r.Sha256, StringComparison.OrdinalIgnoreCase))
+            {
+                File.Delete(path);
+                throw new InvalidOperationException("내려받은 파일의 SHA-256 체크섬이 GitHub 릴리스와 일치하지 않습니다.");
+            }
+        }
         return path;
     }
 
@@ -123,6 +135,25 @@ public static class Updater
         var output = await p.StandardOutput.ReadToEndAsync(ct) + await p.StandardError.ReadToEndAsync(ct);
         await p.WaitForExitAsync(ct);
         return (p.ExitCode, output);
+    }
+
+    /// <summary>Like the original's "Creating shortcut on Desktop" step: OpenShape on the desktop, Fusion shortcuts moved aside.</summary>
+    public static void CreateShortcuts()
+    {
+        const string script = "/opt/openshape/replace-fusion-shortcuts.sh";
+        if (File.Exists(script)) RunCapture("/bin/sh", script);
+    }
+
+    public static void OpenFolder(string dir)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo("xdg-open", $"\"{dir}\"") { UseShellExecute = false });
+        }
+        catch (Exception)
+        {
+            // no file manager
+        }
     }
 
     public static void Launch()

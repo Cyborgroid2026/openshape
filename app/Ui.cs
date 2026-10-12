@@ -242,6 +242,7 @@ public static class Icons
 
     public static Control Color(string key, double size = 32)
     {
+        if (FusionAssets.Control(key, size) is { } real) return real;
         var canvas = new Canvas { Width = 24, Height = 24 };
         if (Defs.TryGetValue(key, out var layers))
             foreach (var (d, fill, stroke) in layers)
@@ -259,6 +260,7 @@ public static class Icons
 
     public static Control Line(string key, double size = 18, IBrush? color = null)
     {
+        if (color == null && FusionAssets.Control(key, size) is { } real) return real;
         var path = new Path
         {
             Data = Geometry.Parse(Lines.GetValueOrDefault(key, "M4,4 H20 V20 H4 Z")),

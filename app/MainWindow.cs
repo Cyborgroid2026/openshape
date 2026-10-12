@@ -239,7 +239,7 @@ public sealed partial class MainWindow : Window
         left.Children.Add(file);
         left.Children.Add(BarButton(Icons.Line("save"), "저장 (Ctrl+S)", () => _ = Save()));
         _undoBtn = BarButton(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, Children = { Icons.Line("undo"), Icons.Line("chevdown", 10) } }, "명령취소 (Ctrl+Z)", Undo, 44);
-        _redoBtn = BarButton(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, Children = { Icons.Line("redo"), Icons.Line("chevdown", 10) } }, "다시 실행 (Ctrl+Y)", Redo, 44);
+        _redoBtn = BarButton(new StackPanel { Orientation = Orientation.Horizontal, Spacing = 2, Children = { Icons.Line("redo"), Icons.Line("chevdown", 10) } }, "명령복구 (Ctrl+Y)", Redo, 44);
         left.Children.Add(_undoBtn);
         left.Children.Add(_redoBtn);
 
@@ -356,7 +356,7 @@ public sealed partial class MainWindow : Window
         var tabs = new List<(string id, string label, bool enabled)>
         {
             ("solid", "솔리드", true), ("surface", "곡면", true), ("mesh", "메쉬", true), ("sheet", "판금", true),
-            ("plastic", "플라스틱", true), ("manage", "관리", true), ("utilities", "유틸리티", true),
+            ("plastic", "플라스틱", true), ("manage", "매니지", true), ("utilities", "유틸리티", true),
         };
         if (_sk != null) tabs.Add(("sketch", "스케치", true));
         foreach (var (id, label, enabled) in tabs)
@@ -393,28 +393,28 @@ public sealed partial class MainWindow : Window
         ["torus"] = "원환",
         ["rectpattern"] = "직사각형 패턴",
         ["circpattern"] = "원형 패턴",
-        ["mirror"] = "대칭",
+        ["mirror"] = "미러",
         ["newcomponent"] = "새 구성요소",
         ["move"] = "이동/복사",
         ["combine"] = "결합",
         ["scale"] = "축척",
         ["delete"] = "삭제",
-        ["appearance"] = "모양",
+        ["appearance"] = "색상",
         ["joint"] = "접합",
-        ["offsetplane"] = "간격띄우기 평면",
+        ["offsetplane"] = "평면 간격띄우기",
         ["measure"] = "측정",
         ["section"] = "단면 분석",
         ["insertmesh"] = "메쉬 삽입",
         ["insertcad"] = "CAD 파일 삽입 (STEP, IGES)",
-        ["fillet"] = "모깎기",
-        ["chamfer"] = "모따기",
+        ["fillet"] = "필렛",
+        ["chamfer"] = "챔퍼",
         ["shell"] = "쉘",
-        ["presspull"] = "누르기/당기기",
+        ["presspull"] = "밀고 당기기",
         ["loft"] = "로프트",
         ["sweep"] = "스윕",
-        ["surfextrude"] = "돌출(곡면)",
+        ["surfextrude"] = "돌출",
         ["patch"] = "패치",
-        ["thicken"] = "두껍게",
+        ["thicken"] = "두껍게 하기",
         ["flange"] = "플랜지",
         ["edgeflange"] = "모서리 플랜지",
         ["sheetrule"] = "판금 규칙",
@@ -422,35 +422,76 @@ public sealed partial class MainWindow : Window
         ["isaac_robot"] = "Isaac Sim으로 보내기 (로봇·URDF)",
         ["isaac_auto"] = "저장할 때 자동 동기화",
         ["isaac_status"] = "Isaac Sim 연결 확인",
-        ["flatpattern"] = "평면 패턴 작성",
+        ["flatpattern"] = "플랫 패턴 작성",
         ["rib"] = "리브",
         ["boss"] = "보스",
         ["select"] = "선택",
         ["export"] = "내보내기",
-        ["parameters"] = "매개변수 변경",
+        ["parameters"] = "매개변수 관리",
         ["line"] = "선",
         ["rect"] = "2점 직사각형",
         ["crect"] = "중심 직사각형",
         ["circle"] = "중심 지름 원",
         ["arc"] = "3점 호",
-        ["polygon"] = "내접 다각형",
+        ["polygon"] = "내접 폴리곤",
         ["trim"] = "자르기",
         ["dimension"] = "스케치 치수",
         ["constraint"] = "구속조건",
         ["c_hv"] = "수평/수직",
         ["c_coincident"] = "일치",
-        ["c_parallel"] = "평행",
+        ["c_parallel"] = "평행선",
         ["c_perpendicular"] = "직각",
         ["c_equal"] = "동일",
-        ["c_fix"] = "고정/고정 해제",
+        ["c_fix"] = "고정/고정해제",
         ["c_midpoint"] = "중간점",
         ["c_concentric"] = "동심",
         ["c_tangent"] = "접선",
         ["c_symmetric"] = "대칭",
-        ["finish"] = "스케치 마침",
+        ["finish"] = "스케치 마무리",
+        ["hole"] = "홀",
+        ["form"] = "자유형 작성",
+        ["automodel"] = "자동 모델링",
+        ["web"] = "웹",
+        ["thread"] = "스레드",
+        ["coil"] = "코일",
+        ["pipe"] = "파이프",
+        ["draft"] = "기울기",
+        ["splitbody"] = "본체 분할",
+        ["insertcomponent"] = "현재 설계에 삽입",
+        ["configmode"] = "디자인 구성",
+        ["configtable"] = "구성 테이블",
+        ["configrules"] = "구성 규칙",
+        ["interference"] = "간섭",
+        ["centerofmass"] = "무게 중심",
+        ["derive"] = "삽입 파생",
+        ["canvas"] = "캔버스",
+        ["decal"] = "전사",
+        ["surfrevolve"] = "회전",
+        ["surfsweep"] = "스윕",
+        ["surfloft"] = "로프트",
+        ["stitch"] = "스티치",
+        ["unstitch"] = "분리",
+        ["surftrim"] = "자르기",
+        ["extend"] = "연장",
+        ["plasticrule"] = "플라스틱 규칙",
+        ["snapfit"] = "스냅 맞춤",
+        ["lip"] = "립",
+        ["rest"] = "레스트",
+        ["meshcreate"] = "메쉬 작성",
+        ["spline"] = "맞춤점 스플라인",
+        ["sketchmirror"] = "미러",
+        ["sketchfillet"] = "필렛",
+        ["offset"] = "간격띄우기",
+        ["c_collinear"] = "동일선상",
+        ["c_smooth"] = "부드럽게(G2)",
     };
 
-    private static readonly HashSet<string> Unsupported = new() { };
+    private static readonly HashSet<string> Unsupported = new()
+    {
+        "hole", "form", "automodel", "web", "thread", "coil", "pipe", "draft", "splitbody", "insertcomponent", "configmode", "configtable", "configrules",
+        "interference", "centerofmass", "derive", "canvas", "decal", "surfrevolve", "surfsweep", "surfloft", "stitch", "unstitch", "surftrim",
+        "extend", "plasticrule", "snapfit", "lip", "rest", "meshcreate", "spline", "sketchmirror", "sketchfillet", "offset", "c_collinear", "c_smooth",
+    };
 
     /// <summary>One toolbar group: a row of big icons with the group name (and ▾ menu) underneath.</summary>
     private Control Group(string title, string[] shown, string[] menu)
@@ -460,7 +501,6 @@ public sealed partial class MainWindow : Window
         {
             var tid = id;
             var b = new FlatButton { Width = 40, Height = 40, Child = Ui.Centered(Icons.Color(id, 30)) }.Init();
-            b.IsEnabled = !Unsupported.Contains(id);
             ToolTip.SetTip(b, Unsupported.Contains(id) ? $"{ToolNames[id]} (지원하지 않음)" : WithKey(id, ToolNames.GetValueOrDefault(id, id)));
             b.Click += () => RunCommand(tid);
             icons.Children.Add(b);
@@ -486,7 +526,6 @@ public sealed partial class MainWindow : Window
             {
                 Header = ToolNames.GetValueOrDefault(id, id),
                 Icon = Icons.Color(id, 18),
-                IsEnabled = !Unsupported.Contains(id),
                 InputGesture = ShortcutLabels.TryGetValue(id, out var key) && key.Length == 1 ? new KeyGesture(Enum.Parse<Key>(key)) : null,
             };
             mi.Click += (_, _) => RunCommand(tid);
@@ -503,29 +542,44 @@ public sealed partial class MainWindow : Window
     private void BuildToolbarGroups()
     {
         BuildTabs();
+        // panel contents follow Fusion's own toolbar definition (TabToolbars.xml): the icons shown in each panel
+        // and the order of the panel menus. Commands OpenShape does not have yet keep their place and say so when clicked.
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4, 2, 0, 0) };
+        void Add(string title, string[] shown, string[] menu)
+        {
+            if (row.Children.Count > 0) row.Children.Add(Separator());
+            row.Children.Add(Group(title, shown, menu));
+        }
+        void Common(bool assemble = true)
+        {
+            if (assemble) Add("조립", new[] { "insertcomponent", "newcomponent", "joint" }, new[] { "insertcomponent", "newcomponent", "-", "joint" });
+            Add("구성", new[] { "configmode", "configtable", "configrules" }, new[] { "configmode", "configtable", "configrules" });
+            Add("생성", new[] { "offsetplane" }, new[] { "offsetplane" });
+            Add("검사", new[] { "measure", "section" }, new[] { "measure", "interference", "section", "centerofmass" });
+            Add("삽입", new[] { "derive", "canvas", "insertmesh" }, new[] { "decal", "canvas", "insertmesh", "insertcad", "-", "derive" });
+            Add("선택", new[] { "select" }, new[] { "select" });
+        }
         if (_sk != null)
         {
-            row.Children.Add(Group("작성", new[] { "line", "rect", "circle", "arc", "polygon", "dimension" }, new[] { "line", "rect", "crect", "circle", "arc", "polygon", "-", "dimension" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("수정", new[] { "trim" }, new[] { "trim" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("구속조건", new[] { "c_hv", "c_coincident", "c_tangent", "c_parallel", "c_perpendicular", "c_equal", "c_fix", "c_midpoint", "c_concentric", "c_symmetric" },
-                new[] { "c_hv", "c_coincident", "c_tangent", "c_parallel", "c_perpendicular", "c_equal", "c_fix", "c_midpoint", "c_concentric", "c_symmetric" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("검사", new[] { "measure" }, new[] { "measure" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("선택", new[] { "select" }, new[] { "select" }));
+            Add("작성", new[] { "line", "rect", "circle", "spline", "sketchmirror", "dimension" },
+                new[] { "line", "-", "rect", "crect", "-", "circle", "arc", "polygon", "spline", "-", "sketchmirror", "-", "dimension" });
+            Add("수정", new[] { "sketchfillet", "trim", "offset" }, new[] { "sketchfillet", "offset", "trim", "-", "move", "parameters" });
+            Add("구속조건", new[] { "constraint", "c_hv", "c_coincident", "c_tangent", "c_equal", "c_parallel", "c_perpendicular", "c_fix", "c_midpoint", "c_concentric", "c_collinear", "c_symmetric", "c_smooth" },
+                new[] { "constraint", "-", "c_hv", "c_coincident", "c_tangent", "c_equal", "c_parallel", "c_perpendicular", "c_fix", "c_midpoint", "c_concentric", "c_collinear", "c_symmetric", "c_smooth" });
+            Add("구성", new[] { "configtable" }, new[] { "configtable", "configrules" });
+            Add("검사", new[] { "measure" }, new[] { "measure", "section" });
+            Add("삽입", new[] { "canvas", "insertmesh" }, new[] { "canvas", "insertmesh", "insertcad" });
+            Add("선택", new[] { "select" }, new[] { "select" });
             row.Children.Add(Separator());
             var finish = new FlatButton
             {
                 Child = new StackPanel
                 {
                     Margin = new Thickness(10, 0),
-                    Children = { Ui.Centered(Icons.Color("finish", 30)), Ui.Label("스케치 마침", 12, Ui.Text) },
+                    Children = { Ui.Centered(Icons.Color("finish", 30)), Ui.Centered(Ui.Label("스케치 마무리", 12, Ui.Text)) },
                 },
             }.Init();
-            ToolTip.SetTip(finish, "스케치 마침");
+            ToolTip.SetTip(finish, "스케치 마무리");
             finish.Click += () => FinishSketch(true);
             row.Children.Add(finish);
             foreach (var c in row.Children.OfType<StackPanel>())
@@ -534,79 +588,58 @@ public sealed partial class MainWindow : Window
         }
         else if (_tab == "surface")
         {
-            row.Children.Add(Group("작성", new[] { "sketch", "surfextrude", "loft", "sweep", "patch" }, new[] { "sketch", "-", "surfextrude", "loft", "sweep", "patch" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("수정", new[] { "thicken", "move", "delete" }, new[] { "thicken", "-", "move", "scale", "delete" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("검사", new[] { "measure", "section" }, new[] { "measure", "section" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("선택", new[] { "select" }, new[] { "select" }));
+            Add("작성", new[] { "sketch", "patch", "surfextrude", "surfrevolve", "surfsweep", "form" },
+                new[] { "newcomponent", "sketch", "form", "-", "surfextrude", "surfrevolve", "surfsweep", "surfloft", "patch", "-", "loft", "sweep", "-", "rectpattern", "circpattern", "mirror", "thicken" });
+            Add("수정", new[] { "stitch", "unstitch", "surftrim", "extend" },
+                new[] { "presspull", "fillet", "chamfer", "surftrim", "extend", "stitch", "unstitch", "-", "scale", "splitbody", "move", "delete", "-", "appearance", "parameters" });
+            Common();
         }
         else if (_tab == "sheet")
         {
-            row.Children.Add(Group("작성", new[] { "sketch", "flange", "edgeflange", "flatpattern" }, new[] { "sketch", "-", "flange", "edgeflange", "-", "flatpattern" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("수정", new[] { "sheetrule", "presspull", "move" }, new[] { "sheetrule", "-", "presspull", "fillet", "move", "delete" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("검사", new[] { "measure" }, new[] { "measure", "section" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("선택", new[] { "select" }, new[] { "select" }));
+            Add("작성", new[] { "newcomponent", "sketch", "flange", "flatpattern", "extrude" },
+                new[] { "newcomponent", "sketch", "-", "flange", "edgeflange", "-", "flatpattern", "extrude" });
+            Add("수정", new[] { "sheetrule", "fillet", "chamfer" }, new[] { "sheetrule", "-", "presspull", "fillet", "chamfer", "move", "delete", "-", "appearance", "parameters" });
+            Common();
         }
         else if (_tab == "plastic")
         {
-            row.Children.Add(Group("작성", new[] { "sketch", "extrude", "rib", "boss" }, new[] { "sketch", "-", "extrude", "rib", "boss" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("수정", new[] { "fillet", "shell", "presspull" }, new[] { "fillet", "chamfer", "shell", "presspull" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("검사", new[] { "measure", "section" }, new[] { "measure", "section" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("선택", new[] { "select" }, new[] { "select" }));
+            Add("설정", new[] { "plasticrule" }, new[] { "plasticrule" });
+            Add("작성", new[] { "sketch", "extrude", "revolve", "hole", "web", "rib", "boss", "snapfit", "lip", "rest", "rectpattern" },
+                new[] { "sketch", "-", "extrude", "revolve", "hole", "-", "web", "rib", "boss", "snapfit", "lip", "rest", "-", "rectpattern", "circpattern", "mirror" });
+            Add("수정", new[] { "presspull", "fillet", "shell", "combine", "splitbody", "move" },
+                new[] { "presspull", "fillet", "chamfer", "shell", "draft", "scale", "combine", "splitbody", "move", "delete", "-", "appearance", "parameters" });
+            Common();
         }
         else if (_tab == "mesh")
         {
-            row.Children.Add(Group("작성", new[] { "insertmesh" }, new[] { "insertmesh", "insertcad" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("수정", new[] { "move", "scale", "delete" }, new[] { "move", "scale", "delete" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("검사", new[] { "measure", "section" }, new[] { "measure", "section" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("내보내기", new[] { "export" }, new[] { "export" }));
+            Add("작성", new[] { "insertmesh", "meshcreate" }, new[] { "newcomponent", "insertmesh", "meshcreate", "insertcad" });
+            Add("수정", new[] { "move", "scale" }, new[] { "move", "scale", "delete" });
+            Add("검사", new[] { "measure", "section" }, new[] { "measure", "section" });
+            Add("내보내기", new[] { "export" }, new[] { "export" });
+            Add("선택", new[] { "select" }, new[] { "select" });
         }
         else if (_tab == "manage")
         {
-            row.Children.Add(Group("관리", new[] { "parameters" }, new[] { "parameters" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("검사", new[] { "measure" }, new[] { "measure" }));
+            Add("매개변수", new[] { "parameters" }, new[] { "parameters" });
+            Add("검사", new[] { "measure" }, new[] { "measure" });
         }
         else if (_tab == "utilities")
         {
-            row.Children.Add(Group("만들기", new[] { "export" }, new[] { "export" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("애드인 · IsaacSimLink", new[] { "isaac_cad", "isaac_robot", "isaac_auto", "isaac_status" }, new[] { "isaac_cad", "isaac_robot", "-", "isaac_auto", "isaac_status" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("검사", new[] { "measure" }, new[] { "measure" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("삽입", new[] { "insertmesh", "insertcad" }, new[] { "insertmesh", "insertcad" }));
+            Add("만들기", new[] { "export" }, new[] { "export" });
+            Add("애드인", new[] { "isaac_cad", "isaac_robot", "isaac_auto", "isaac_status" }, new[] { "isaac_cad", "isaac_robot", "-", "isaac_auto", "isaac_status" });
+            Add("유틸리티", new[] { "parameters" }, new[] { "parameters" });
+            Add("검사", new[] { "measure", "interference", "section" }, new[] { "measure", "interference", "section" });
+            Add("선택", new[] { "select" }, new[] { "select" });
         }
         else
         {
-            row.Children.Add(Group("작성", new[] { "sketch", "extrude", "revolve", "box", "rectpattern", "mirror" },
-                new[] { "newcomponent", "sketch", "-", "extrude", "revolve", "loft", "sweep", "-", "box", "cylinder", "sphere", "torus", "-", "rectpattern", "circpattern", "mirror", "-", "rib", "boss" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("수정", new[] { "presspull", "fillet", "chamfer", "shell", "combine", "move" },
-                new[] { "presspull", "fillet", "chamfer", "shell", "-", "combine", "scale", "-", "appearance", "-", "delete", "move" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("조립", new[] { "newcomponent", "joint" }, new[] { "newcomponent", "joint" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("구성", new[] { "offsetplane" }, new[] { "offsetplane" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("검사", new[] { "measure", "section" }, new[] { "measure", "section" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("삽입", new[] { "insertmesh", "insertcad" }, new[] { "insertmesh", "insertcad" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("선택", new[] { "select" }, new[] { "select" }));
-            row.Children.Add(Separator());
-            row.Children.Add(Group("Isaac Sim", new[] { "isaac_cad", "isaac_robot" }, new[] { "isaac_cad", "isaac_robot", "-", "isaac_auto", "isaac_status" }));
+            Add("작성", new[] { "sketch", "extrude", "revolve", "hole", "rectpattern", "form", "automodel" },
+                new[] { "sketch", "form", "automodel", "-", "extrude", "revolve", "sweep", "loft", "rib", "web", "hole", "thread", "-",
+                        "box", "cylinder", "sphere", "torus", "coil", "pipe", "-", "rectpattern", "circpattern", "mirror", "thicken" });
+            Add("수정", new[] { "presspull", "fillet", "shell", "combine", "splitbody", "move" },
+                new[] { "presspull", "fillet", "chamfer", "shell", "draft", "scale", "combine", "splitbody", "move", "delete", "-", "appearance", "-", "parameters" });
+            Common();
+            Add("Isaac Sim", new[] { "isaac_cad", "isaac_robot" }, new[] { "isaac_cad", "isaac_robot", "-", "isaac_auto", "isaac_status" });
         }
         _toolbarGroups.Content = row;
     }
@@ -876,7 +909,7 @@ public sealed partial class MainWindow : Window
             ("last", "끝으로", () => MoveMarker(_doc.Features.Count)),
         })
         {
-            var b = new FlatButton { Width = 30, Height = 30, Child = Ui.Centered(Icons.Line(k, 16, Ui.Brush("#4A4A4A"))) }.Init();
+            var b = new FlatButton { Width = 30, Height = 30, Child = Ui.Centered(Icons.Line(k, 16)) }.Init();
             ToolTip.SetTip(b, tip);
             b.Click += act;
             play.Children.Add(b);
@@ -885,7 +918,7 @@ public sealed partial class MainWindow : Window
         var g = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*,Auto"), Children = { play } };
         Grid.SetColumn(scroll, 1);
         g.Children.Add(scroll);
-        var gear = Icons.Line("gear", 18, Ui.Brush("#4A4A4A"));
+        var gear = Icons.Line("gear", 18);
         gear.Margin = new Thickness(12, 0);
         Grid.SetColumn(gear, 2);
         g.Children.Add(gear);
@@ -1007,7 +1040,7 @@ public sealed partial class MainWindow : Window
         var row = new StackPanel { Orientation = Orientation.Horizontal, Margin = new Thickness(4, 2) };
         FlatButton Nav(string icon, string tip, Action a, bool chevron = false)
         {
-            var sp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 1, Children = { Icons.Line(icon, 18, Ui.Brush("#4A4A4A")) } };
+            var sp = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 1, Children = { Icons.Line(icon, 18) } };
             if (chevron) sp.Children.Add(Icons.Line("chevdown", 9, Ui.Brush("#4A4A4A")));
             var b = new FlatButton { Height = 30, Padding = new Thickness(6, 0), Child = Ui.Centered(sp) }.Init();
             ToolTip.SetTip(b, tip);
@@ -1022,14 +1055,14 @@ public sealed partial class MainWindow : Window
             pan!.IsSelected = View.NavMode == "pan";
             zoom!.IsSelected = View.NavMode == "zoom";
         }
-        orbit = Nav("orbit", "궤도 (Shift+가운데 버튼 끌기)", () => Mode("orbit"), true);
-        var look = Nav("lookat", "보기 방향", LookAt);
+        orbit = Nav("orbit", "자유 회전 (Shift+가운데 버튼 끌기)", () => Mode("orbit"), true);
+        var look = Nav("lookat", "보기", LookAt);
         pan = Nav("pan", "초점이동 (가운데 버튼 끌기)", () => Mode("pan"));
         zoom = Nav("zoom", "줌 (휠)", () => Mode("zoom"));
         var fit = Nav("fit", "맞춤", FitAll, true);
         var display = Nav("display", "화면표시 설정", () => { }, true);
         var dm = new MenuFlyout();
-        var edges = new MenuItem { Header = "모서리로 음영처리", ToggleType = MenuItemToggleType.Radio, IsChecked = true };
+        var edges = new MenuItem { Header = "가시적 모서리로만 음영처리", ToggleType = MenuItemToggleType.Radio, IsChecked = true };
         var shaded = new MenuItem { Header = "음영처리", ToggleType = MenuItemToggleType.Radio };
         edges.Click += (_, _) => { View.ShowEdges = true; edges.IsChecked = true; shaded.IsChecked = false; View.Invalidate3D(); };
         shaded.Click += (_, _) => { View.ShowEdges = false; shaded.IsChecked = true; edges.IsChecked = false; View.Invalidate3D(); };
@@ -1037,9 +1070,9 @@ public sealed partial class MainWindow : Window
         dm.Items.Add(shaded);
         FlyoutBase.SetAttachedFlyout(display, dm);
         display.Click += () => FlyoutBase.ShowAttachedFlyout(display);
-        var grid = Nav("grid", "격자 및 스냅", () => { }, true);
+        var grid = Nav("grid", "그리드 및 스냅", () => { }, true);
         var gm = new MenuFlyout();
-        var layout = new MenuItem { Header = "레이아웃 격자", ToggleType = MenuItemToggleType.CheckBox, IsChecked = true };
+        var layout = new MenuItem { Header = "배치 그리드", ToggleType = MenuItemToggleType.CheckBox, IsChecked = true };
         layout.Click += (_, _) => { View.ShowGrid = !View.ShowGrid; layout.IsChecked = View.ShowGrid; View.Invalidate3D(); };
         gm.Items.Add(layout);
         FlyoutBase.SetAttachedFlyout(grid, gm);
@@ -1138,8 +1171,9 @@ public sealed partial class MainWindow : Window
     private void ShowAbout()
     {
         var panel = new CommandPanel("정보", null, () => CloseDialog(), null);
-        panel.AddText("OpenShape CAD 1.1.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
-                      "Autodesk의 코드나 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다.\n\n" +
+        panel.AddText("OpenShape CAD 1.2.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
+                      "Autodesk의 코드나 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다. " +
+                      "이 컴퓨터에 Fusion이 설치되어 있으면(Wine) 그 설치본의 아이콘을 읽어 같은 모양으로 표시합니다.\n\n" +
                       "Fusion IsaacSimLink 애드인의 기능(형상·로봇 보내기, 저장 시 자동 동기화)이 내장되어 있고, Fusion 클라우드 디자인은 데이터 패널에서 열 수 있습니다. " +
                       ".f3d 파일은 Autodesk 클라우드(APS)에서 STEP으로 변환해 엽니다.");
         panel.AddText(ShortcutHelp());

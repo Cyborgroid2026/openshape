@@ -123,7 +123,7 @@ public sealed partial class MainWindow
             if (id.StartsWith("c_") || sketchOnly.Contains(id)) { if (_sk != null) yield return (id, name); }
             else yield return (id, name);
         }
-        yield return ("parameters", "매개변수 변경");
+        yield return ("parameters", "매개변수 관리");
         yield return ("export", "내보내기");
     }
 
@@ -131,7 +131,7 @@ public sealed partial class MainWindow
     public void ShowShortcutBox(string text = "")
     {
         if (_shortcutBox != null) { _canvasLayer.Children.Remove(_shortcutBox); _shortcutBox = null; }
-        var box = new TextBox { Text = text, Watermark = "명령 검색 (예: 돌출, 모깎기)", Height = 32, MinHeight = 0, Padding = new Thickness(8, 4), Tag = "shortcutbox" };
+        var box = new TextBox { Text = text, Watermark = "명령 검색 (예: 돌출, 필렛)", Height = 32, MinHeight = 0, Padding = new Thickness(8, 4), Tag = "shortcutbox" };
         var list = new StackPanel();
         void Close()
         {
@@ -259,12 +259,12 @@ public sealed partial class MainWindow
     {
         var p = new CommandPanel("알림 센터", null, null, CancelCommand);
         p.AddText(_updateInfo ?? "새 알림이 없습니다. OpenShape CAD가 최신 버전입니다.");
-        var run = new FlatButton { Height = 30, Normal = _updateInfo != null ? Ui.Accent : Ui.Brush("#EDEDED"), Child = Ui.Centered(Ui.Label(_updateInfo != null ? "업데이트" : "업데이트 확인 / 다시 설치", 12, _updateInfo != null ? Brushes.White : Ui.Text)) }.Init();
+        var run = new FlatButton { Height = 30, Normal = _updateInfo != null ? Ui.Accent : Ui.Brush("#EDEDED"), Child = Ui.Centered(Ui.Label(_updateInfo != null ? "업데이트" : "다시 설치", 12, _updateInfo != null ? Brushes.White : Ui.Text)) }.Init();
         run.Click += () =>
         {
             CancelCommand();
             if (File.Exists(InstallerPath))
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(InstallerPath) { UseShellExecute = false });
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(InstallerPath, _updateInfo != null ? "" : "--reinstall") { UseShellExecute = false });
         };
         p.AddControl(run);
         CancelCommand();
@@ -274,9 +274,9 @@ public sealed partial class MainWindow
 
     private static string ShortcutHelp() =>
         "키보드 단축키 (Fusion 기본값과 같음)\n" +
-        "  S  명령 검색 · E 돌출 · Q 누르기/당기기 · F 모깎기 · M 이동/복사 · J 접합 · I 측정 · A 모양 · V 표시/숨기기\n" +
+        "  S  명령 검색 · E 돌출 · Q 밀고 당기기 · F 필렛 · M 이동/복사 · J 접합 · I 측정 · A 색상 · V 표시/숨기기\n" +
         "  스케치: L 선 · R 직사각형 · C 원 · P 다각형 · D 치수 · T 자르기 · Enter/오른쪽 클릭 선 끝내기 · E 스케치 마치고 돌출\n" +
-        "  Ctrl+Z/Y 명령취소/다시 실행 · Ctrl+S 저장 · Ctrl+Shift+S 다른 이름으로 저장 · Ctrl+O 열기 · Ctrl+N 새 디자인\n" +
+        "  Ctrl+Z/Y 명령취소/명령복구 · Ctrl+S 저장 · Ctrl+Shift+S 다른 이름으로 저장 · Ctrl+O 열기 · Ctrl+N 새 디자인\n" +
         "  Ctrl+C/V 본체 복사/붙여넣기 · Ctrl+A 모두 선택 · Delete 삭제 · Esc 취소 · F6 맞춤\n" +
         "  마우스: 휠 줌 · 가운데 버튼 끌기 초점이동 · Shift+가운데 버튼(또는 오른쪽 버튼) 끌기 궤도";
 }

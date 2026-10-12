@@ -2,13 +2,16 @@
 # Build the Rust engine and the self-contained C# app, run the tests, then package a .deb.
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION=1.1.0
+VERSION=1.2.0
 ARCH=amd64
 PKG=openshape_${VERSION}_${ARCH}
 STAGE="$ROOT/build/$PKG"
 
 cargo build --release --manifest-path "$ROOT/engine/Cargo.toml"
 cargo test --release --manifest-path "$ROOT/engine/Cargo.toml"
+# Rust core of the client downloader (SHA-256 check, dpkg version order)
+cargo test --release --manifest-path "$ROOT/installer/native/Cargo.toml"
+cargo build --release --manifest-path "$ROOT/installer/native/Cargo.toml"
 
 # OpenCASCADE shim (headers/libs from the system or from downloaded Ubuntu packages)
 sh "$ROOT/occt/build.sh"

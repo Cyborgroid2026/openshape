@@ -1,17 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
+    <OutputType>Exe</OutputType>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>openshape-installer</AssemblyName>
     <RootNamespace>OpenShapeInstaller</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.22" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.22" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.22" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Rust core (SHA-256 check of the download, dpkg version comparison); built by packaging/build-deb.sh -->
+    <None Include="native/target/release/libosc_installer.so" Link="libosc_installer.so" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" Condition="Exists('native/target/release/libosc_installer.so')" />
   </ItemGroup>
 </Project>

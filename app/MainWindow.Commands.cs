@@ -14,7 +14,7 @@ public sealed partial class MainWindow
     private CommandSession? _cmd;
     private readonly DispatcherTimer _previewTimer;
 
-    private static readonly string[] OpNames = { "접합", "절단", "교차", "새 바디" };
+    private static readonly string[] OpNames = { "접합", "잘라내기", "교차", "새 본체" };
     private static readonly BodyOp[] OpOrder = { BodyOp.Join, BodyOp.Cut, BodyOp.Intersect, BodyOp.NewBody };
 
     private static readonly (string name, string hex)[] Appearances =
@@ -34,6 +34,11 @@ public sealed partial class MainWindow
 
     public void RunCommand(string id)
     {
+        if (Unsupported.Contains(id))
+        {
+            SetPrompt($"{ToolNames.GetValueOrDefault(id, id)}: 이 명령은 OpenShape CAD에서 아직 지원하지 않습니다.");
+            return;
+        }
         if (_sk != null)
         {
             switch (id)
@@ -100,7 +105,7 @@ public sealed partial class MainWindow
                 break;
             case "offsetplane":
                 StartPlanePick(10);
-                SetPrompt("간격띄우기 평면을 만들 기준 평면을 선택하세요. 간격은 스케치 팔레트에서 바꿀 수 있습니다.");
+                SetPrompt("평면 간격띄우기을 만들 기준 평면을 선택하세요. 간격은 스케치 팔레트에서 바꿀 수 있습니다.");
                 break;
             case "extrude":
                 OpenCommand(new ExtrudeFeature { Name = _doc.NextName("extrude"), Profiles = _selProfiles.ToList(), Operation = _state.Bodies.Count > 0 ? BodyOp.Join : BodyOp.NewBody }, -1);
@@ -326,7 +331,7 @@ public sealed partial class MainWindow
                 p.AddCombo("범위 유형", new[] { "거리" }, 0, _ => { });
                 p.AddNumber(ex.Direction == 2 ? "거리 - 측면 1" : "거리", ex.Distance, "mm", v => ex.Distance = v, Changed, f, "Distance");
                 if (ex.Direction == 2) p.AddNumber("거리 - 측면 2", ex.Distance2, "mm", v => ex.Distance2 = v, Changed, f, "Distance2");
-                p.AddCombo("작업", OpNames, OpIndex(ex.Operation), i => { ex.Operation = OpOrder[i]; Changed(); });
+                p.AddCombo("생성", OpNames, OpIndex(ex.Operation), i => { ex.Operation = OpOrder[i]; Changed(); });
                 break;
 
             case RevolveFeature rv:
@@ -338,7 +343,7 @@ public sealed partial class MainWindow
                 p.AddCombo("축", axes.ToArray(), Math.Min(rv.Axis, axes.Count - 1), i => { rv.Axis = i; Changed(); });
                 p.AddCombo("유형", new[] { "각도" }, 0, _ => { });
                 p.AddNumber("각도", rv.Angle, "deg", v => rv.Angle = v, Changed, f, "Angle");
-                p.AddCombo("작업", OpNames, OpIndex(rv.Operation), i => { rv.Operation = OpOrder[i]; Changed(); });
+                p.AddCombo("생성", OpNames, OpIndex(rv.Operation), i => { rv.Operation = OpOrder[i]; Changed(); });
                 break;
             }
 
@@ -366,7 +371,7 @@ public sealed partial class MainWindow
                 p.AddNumber("X", pr.X, "mm", v => pr.X = v, Changed, f, "X");
                 p.AddNumber("Y", pr.Y, "mm", v => pr.Y = v, Changed, f, "Y");
                 p.AddNumber(pr.Shape == "sphere" || pr.Shape == "torus" ? "Z (중심)" : "Z (바닥)", pr.Z, "mm", v => pr.Z = v, Changed, f, "Z");
-                p.AddCombo("작업", OpNames, OpIndex(pr.Operation), i => { pr.Operation = OpOrder[i]; Changed(); });
+                p.AddCombo("생성", OpNames, OpIndex(pr.Operation), i => { pr.Operation = OpOrder[i]; Changed(); });
                 break;
 
             case MoveFeature mv:
@@ -385,7 +390,7 @@ public sealed partial class MainWindow
                 Select("객체", "bodies", mi.Bodies.Count, "본체", () => mi.Bodies.Clear());
                 p.AddCombo("대칭 평면", new[] { "XY 평면", "XZ 평면", "YZ 평면" }, mi.Plane switch { "XY" => 0, "XZ" => 1, _ => 2 },
                     i => { mi.Plane = new[] { "XY", "XZ", "YZ" }[i]; Changed(); });
-                p.AddCombo("작업", new[] { "새 바디", "접합" }, mi.Join ? 1 : 0, i => { mi.Join = i == 1; Changed(); });
+                p.AddCombo("생성", new[] { "새 본체", "접합" }, mi.Join ? 1 : 0, i => { mi.Join = i == 1; Changed(); });
                 break;
 
             case PatternFeature pt when pt.Circular:
@@ -409,7 +414,7 @@ public sealed partial class MainWindow
             case CombineFeature cb:
                 Select("대상 본체", "target", string.IsNullOrEmpty(cb.Target) ? 0 : 1, "본체", () => cb.Target = "");
                 Select("도구 본체", "tools", cb.Tools.Count, "본체", () => cb.Tools.Clear());
-                p.AddCombo("작업", new[] { "접합", "절단", "교차" }, cb.Operation switch { BodyOp.Cut => 1, BodyOp.Intersect => 2, _ => 0 },
+                p.AddCombo("생성", new[] { "접합", "잘라내기", "교차" }, cb.Operation switch { BodyOp.Cut => 1, BodyOp.Intersect => 2, _ => 0 },
                     i => { cb.Operation = i switch { 1 => BodyOp.Cut, 2 => BodyOp.Intersect, _ => BodyOp.Join }; Changed(); });
                 p.AddCheck("도구 유지", cb.KeepTools, v => { cb.KeepTools = v; Changed(); });
                 break;
@@ -423,13 +428,13 @@ public sealed partial class MainWindow
             case LoftFeature lf:
                 Select("프로파일", "profiles", lf.Profiles.Count, "프로파일", () => lf.Profiles.Clear());
                 p.AddText("서로 다른 스케치의 닫힌 프로파일을 순서대로 클릭하세요.");
-                p.AddCombo("작업", OpNames, OpIndex(lf.Operation), i => { lf.Operation = OpOrder[i]; Changed(); });
+                p.AddCombo("생성", OpNames, OpIndex(lf.Operation), i => { lf.Operation = OpOrder[i]; Changed(); });
                 break;
 
             case SweepFeature sw:
                 Select("프로파일", "profiles", sw.Profiles.Count, "프로파일", () => sw.Profiles.Clear());
                 Select("경로", "path", sw.Path.Count, "경로", () => sw.Path.Clear());
-                p.AddCombo("작업", OpNames, OpIndex(sw.Operation), i => { sw.Operation = OpOrder[i]; Changed(); });
+                p.AddCombo("생성", OpNames, OpIndex(sw.Operation), i => { sw.Operation = OpOrder[i]; Changed(); });
                 break;
 
             case SurfaceFeature sf:
@@ -503,7 +508,7 @@ public sealed partial class MainWindow
                 break;
 
             case FilletFeature fl:
-                p.AddInfo("유형", fl.Chamfer ? "모따기 - 동일 거리" : "모깎기 - 일정 반지름");
+                p.AddInfo("유형", fl.Chamfer ? "챔퍼 - 동일 거리" : "필렛 - 일정 반지름");
                 Select("모서리", "edges", fl.Edges.Count, "모서리", () => { fl.Edges.Clear(); fl.Body = ""; });
                 p.AddCheck("모든 모서리", fl.AllEdges, v => { fl.AllEdges = v; if (v && fl.Body == "" && c.Base!.Bodies.Count > 0) fl.Body = c.Base.Bodies[^1].Id; Changed(); });
                 p.AddNumber(fl.Chamfer ? "거리" : "반지름", fl.Size, "mm", v => fl.Size = v, Changed, f, "Size");
@@ -653,7 +658,7 @@ public sealed partial class MainWindow
         RefreshPreview();
     }
 
-    /// <summary>"매개변수 변경": user parameters, plus the model fields that use them.</summary>
+    /// <summary>"매개변수 관리": user parameters, plus the model fields that use them.</summary>
     private void ShowParameters()
     {
         CancelCommand();
@@ -776,7 +781,7 @@ public sealed partial class MainWindow
     {
         CancelCommand();
         var id = _selBodies.FirstOrDefault(State.Sheets.ContainsKey) ?? State.Sheets.Keys.FirstOrDefault(k => State.Find(k) != null);
-        var p = new CommandPanel("평면 패턴", "flatpattern", null, () => { _flatView = null; CancelCommand(); UpdateItems(); });
+        var p = new CommandPanel("플랫 패턴", "flatpattern", null, () => { _flatView = null; CancelCommand(); UpdateItems(); });
         _cmd = new CommandSession { Id = "flatpattern", Panel = p };
         if (id == null)
         {
@@ -800,7 +805,7 @@ public sealed partial class MainWindow
             {
                 var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
                 {
-                    Title = "평면 패턴 DXF 내보내기",
+                    Title = "플랫 패턴 DXF 내보내기",
                     SuggestedFileName = BodyName(id) + "_flat.dxf",
                     DefaultExtension = "dxf",
                     FileTypeChoices = new[] { new FilePickerFileType("DXF") { Patterns = new[] { "*.dxf" } } },
