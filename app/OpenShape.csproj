@@ -8,7 +8,7 @@
     <AssemblyName>openshape</AssemblyName>
     <RootNamespace>OpenShape</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.22" />
@@ -17,5 +17,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="../engine/target/release/libopenshape_engine.so" Link="libopenshape_engine.so" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../occt/build/libopenshape_occt.so" Link="libopenshape_occt.so" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

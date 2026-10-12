@@ -104,8 +104,42 @@ public sealed class SketchEntity
     };
 }
 
-/// <summary>A closed loop of a sketch; Holes are the loops directly inside it.</summary>
-public sealed record Profile(int Index, List<P2> Loop, double Area, List<int> Holes)
+/// <summary>
+/// One exact curve of a profile: 0 line (x1 y1 x2 y2), 1 three-point arc (x1 y1 xm ym x2 y2), 2 circle (cx cy r).
+/// </summary>
+public sealed record Piece(int Kind, double[] P)
+{
+    public Piece Reversed() => Kind switch
+    {
+        0 => new Piece(0, new[] { P[2], P[3], P[0], P[1] }),
+        1 => new Piece(1, new[] { P[4], P[5], P[2], P[3], P[0], P[1] }),
+        _ => this,
+    };
+
+    /// <summary>Pieces of a sketch entity in drawing order.</summary>
+    public static List<Piece> Of(SketchEntity e)
+    {
+        var p = e.P;
+        switch (e.Kind)
+        {
+            case "circle":
+                return new List<Piece> { new(2, new[] { p[0], p[1], p[2] }) };
+            case "arc":
+                // stored as start, end, through point
+                return new List<Piece> { new(1, new[] { p[0], p[1], p[4], p[5], p[2], p[3] }) };
+            case "line":
+                return new List<Piece> { new(0, new[] { p[0], p[1], p[2], p[3] }) };
+            default:
+            {
+                var pts = e.Points();
+                return pts.Select((a, i) => { var b = pts[(i + 1) % pts.Count]; return new Piece(0, new[] { a.X, a.Y, b.X, b.Y }); }).ToList();
+            }
+        }
+    }
+}
+
+/// <summary>A closed loop of a sketch; Holes are the loops directly inside it. Loop is a polyline for display.</summary>
+public sealed record Profile(int Index, List<P2> Loop, double Area, List<int> Holes, List<Piece> Pieces)
 {
     public bool Contains(P2 p) => Profiles.Inside(Loop, p);
 }
@@ -137,16 +171,18 @@ public static class Profiles
     /// <summary>Closed loops of the sketch: closed curves plus chains of lines/arcs that return to their start.</summary>
     public static List<Profile> Compute(SketchFeature s)
     {
-        var loops = new List<List<P2>>();
-        foreach (var e in s.Entities.Where(e => e.Closed)) loops.Add(e.Points());
+        var loops = new List<(List<P2> pts, List<Piece> pieces)>();
+        foreach (var e in s.Entities.Where(e => e.Closed)) loops.Add((e.Points(), Piece.Of(e)));
 
         const double tol = 1e-6;
-        var open = s.Entities.Where(e => !e.Closed).Select(e => e.Points()).Where(p => p.Count >= 2 && p[0].Dist(p[^1]) > tol).ToList();
+        var open = s.Entities.Where(e => !e.Closed).Select(e => (pts: e.Points(), piece: Piece.Of(e)[0]))
+            .Where(o => o.pts.Count >= 2 && o.pts[0].Dist(o.pts[^1]) > tol).ToList();
         var used = new bool[open.Count];
         for (int i = 0; i < open.Count; i++)
         {
             if (used[i]) continue;
-            var chain = new List<P2>(open[i]);
+            var chain = new List<P2>(open[i].pts);
+            var pieces = new List<Piece> { open[i].piece };
             var parts = new List<int> { i };
             used[i] = true;
             bool grown = true;
@@ -156,9 +192,17 @@ public static class Profiles
                 for (int j = 0; j < open.Count; j++)
                 {
                     if (used[j]) continue;
-                    var q = open[j];
-                    if (q[0].Dist(chain[^1]) <= tol) chain.AddRange(q.Skip(1));
-                    else if (q[^1].Dist(chain[^1]) <= tol) chain.AddRange(Enumerable.Reverse(q).Skip(1));
+                    var q = open[j].pts;
+                    if (q[0].Dist(chain[^1]) <= tol)
+                    {
+                        chain.AddRange(q.Skip(1));
+                        pieces.Add(open[j].piece);
+                    }
+                    else if (q[^1].Dist(chain[^1]) <= tol)
+                    {
+                        chain.AddRange(Enumerable.Reverse(q).Skip(1));
+                        pieces.Add(open[j].piece.Reversed());
+                    }
                     else continue;
                     used[j] = true;
                     parts.Add(j);
@@ -169,7 +213,7 @@ public static class Profiles
             if (chain.Count >= 4 && chain[0].Dist(chain[^1]) <= tol)
             {
                 chain.RemoveAt(chain.Count - 1);
-                loops.Add(chain);
+                loops.Add((chain, pieces));
             }
             else
                 foreach (var k in parts.Skip(1)) used[k] = false;   // let the other pieces form their own loops
@@ -179,8 +223,12 @@ public static class Profiles
         var areas = new List<double>();
         for (int i = 0; i < loops.Count; i++)
         {
-            double a = SignedArea(loops[i]);
-            if (a < 0) loops[i].Reverse();
+            double a = SignedArea(loops[i].pts);
+            if (a < 0)
+            {
+                loops[i].pts.Reverse();
+                loops[i] = (loops[i].pts, Enumerable.Reverse(loops[i].pieces).Select(p => p.Reversed()).ToList());
+            }
             areas.Add(Math.Abs(a));
         }
         var parent = new int[loops.Count];
@@ -191,24 +239,25 @@ public static class Profiles
             for (int j = 0; j < loops.Count; j++)
             {
                 if (i == j || areas[j] <= areas[i] || areas[j] >= best) continue;
-                if (loops[i].All(p => Inside(loops[j], p)) || Inside(loops[j], Centroid(loops[i])) && Inside(loops[j], loops[i][0]))
+                var (li, lj) = (loops[i].pts, loops[j].pts);
+                if (li.All(p => Inside(lj, p)) || Inside(lj, Centroid(li)) && Inside(lj, li[0]))
                 {
                     parent[i] = j;
                     best = areas[j];
                 }
             }
         }
-        return loops.Select((l, i) => new Profile(i, l, areas[i], Enumerable.Range(0, loops.Count).Where(k => parent[k] == i).ToList())).ToList();
+        return loops.Select((l, i) => new Profile(i, l.pts, areas[i], Enumerable.Range(0, loops.Count).Where(k => parent[k] == i).ToList(), l.pieces)).ToList();
     }
 
     public static P2 Centroid(IReadOnlyList<P2> p) => new(p.Average(q => q.X), p.Average(q => q.Y));
 
-    /// <summary>The region of a profile as loops for the engine: outer boundary first, then holes.</summary>
-    public static List<IReadOnlyList<P2>> Region(List<Profile> all, int index)
+    /// <summary>The region of a profile: its outer loop first, then the loops directly inside it (holes).</summary>
+    public static List<Profile> Region(List<Profile> all, int index)
     {
         var pr = all[index];
-        var r = new List<IReadOnlyList<P2>> { pr.Loop };
-        r.AddRange(pr.Holes.Select(h => (IReadOnlyList<P2>)all[h].Loop));
+        var r = new List<Profile> { pr };
+        r.AddRange(pr.Holes.Select(h => all[h]));
         return r;
     }
 
@@ -243,6 +292,8 @@ public sealed class ProfileRef
 [JsonDerivedType(typeof(ScaleFeature), "scale")]
 [JsonDerivedType(typeof(DeleteFeature), "delete")]
 [JsonDerivedType(typeof(ImportFeature), "import")]
+[JsonDerivedType(typeof(FilletFeature), "fillet")]
+[JsonDerivedType(typeof(ShellFeature), "shell")]
 public abstract class Feature
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..10];
@@ -265,8 +316,20 @@ public sealed class SketchFeature : Feature
     public double Offset { get; set; }
     public List<SketchEntity> Entities { get; set; } = new();
     public bool Visible { get; set; } = true;
+    /// <summary>Frame (origin, u, v, n) when the sketch sits on a model face (Plane = "face").</summary>
+    public double[]? Custom { get; set; }
     public override string Command => "sketch";
-    [JsonIgnore] public PlaneFrame Frame => PlaneFrame.Of(Plane, Offset);
+
+    [JsonIgnore]
+    public PlaneFrame Frame
+    {
+        get
+        {
+            if (Plane != "face" || Custom is not { Length: 12 } c) return PlaneFrame.Of(Plane, Offset);
+            var n = new V3(c[9], c[10], c[11]);
+            return new PlaneFrame(new V3(c[0], c[1], c[2]) + n * Offset, new V3(c[3], c[4], c[5]), new V3(c[6], c[7], c[8]), n);
+        }
+    }
 }
 
 public sealed class ExtrudeFeature : Feature
@@ -363,6 +426,27 @@ public sealed class DeleteFeature : Feature
     public override string Command => "delete";
 }
 
+/// <summary>Fillet or chamfer. Edges are remembered by a point on each edge (re-found on replay).</summary>
+public sealed class FilletFeature : Feature
+{
+    public string Body { get; set; } = "";
+    public List<double[]> Edges { get; set; } = new();
+    public bool AllEdges { get; set; }
+    public double Size { get; set; } = 2;
+    public bool Chamfer { get; set; }
+    public override string Command => Chamfer ? "chamfer" : "fillet";
+}
+
+/// <summary>Hollow a body; removed faces are remembered by a point on each face.</summary>
+public sealed class ShellFeature : Feature
+{
+    public string Body { get; set; } = "";
+    public List<double[]> Faces { get; set; } = new();
+    public double Thickness { get; set; } = 2;
+    public bool Outside { get; set; }
+    public override string Command => "shell";
+}
+
 public sealed class ImportFeature : Feature
 {
     public string Path { get; set; } = "";
@@ -410,7 +494,11 @@ public sealed class Doc
         ["combine"] = "결합",
         ["scale"] = "축척",
         ["delete"] = "제거",
-        ["insertmesh"] = "메시 삽입",
+        ["insertmesh"] = "메쉬 삽입",
+        ["fillet"] = "모깎기",
+        ["chamfer"] = "모따기",
+        ["shell"] = "쉘",
+        ["insert"] = "삽입",
     };
 
     /// <summary>Next free default name for a feature of this command ("돌출1", "돌출2" ...).</summary>
@@ -472,7 +560,7 @@ public static class Evaluator
         return s;
     }
 
-    private static List<IReadOnlyList<P2>> RegionOf(ModelState s, ProfileRef r, out SketchFeature sketch)
+    private static List<Profile> RegionOf(ModelState s, ProfileRef r, out SketchFeature sketch)
     {
         sketch = s.Sketches.FirstOrDefault(k => k.Id == r.Sketch) ?? throw new InvalidOperationException("참조한 스케치가 없습니다.");
         var all = s.SketchProfiles[sketch.Id];
@@ -642,9 +730,31 @@ public static class Evaluator
             case ImportFeature im:
             {
                 if (!File.Exists(im.Path)) throw new InvalidOperationException($"파일을 찾을 수 없습니다: {im.Path}");
-                var solid = Solid.Import(im.Path) ?? throw new InvalidOperationException("STL/OBJ 파일을 읽을 수 없습니다.");
-                if (Math.Abs(im.Scale - 1) > 1e-12) solid = solid.Transform(Affine.Scale(V3.Zero, im.Scale));
-                s.Bodies.Add(new Body { Id = f.Id + ":0", Solid = solid });
+                int k = 0;
+                foreach (var solid0 in Solid.Import(im.Path))
+                {
+                    var solid = Math.Abs(im.Scale - 1) > 1e-12 ? solid0.Transform(Affine.Scale(V3.Zero, im.Scale)) : solid0;
+                    s.Bodies.Add(new Body { Id = $"{f.Id}:{k++}", Solid = solid });
+                }
+                break;
+            }
+
+            case FilletFeature fl:
+            {
+                var body = s.Find(fl.Body) ?? throw new InvalidOperationException("모서리를 선택하세요.");
+                if (fl.Edges.Count == 0 && !fl.AllEdges) throw new InvalidOperationException("모서리를 선택하세요.");
+                var pts = fl.AllEdges ? new List<V3>() : fl.Edges.Select(e => new V3(e[0], e[1], e[2])).ToList();
+                if (fl.Size <= 0) throw new InvalidOperationException(fl.Chamfer ? "거리는 0보다 커야 합니다." : "반지름은 0보다 커야 합니다.");
+                Replace(s, body, fl.Chamfer ? body.Solid.Chamfer(pts, fl.Size) : body.Solid.Fillet(pts, fl.Size));
+                break;
+            }
+
+            case ShellFeature sh:
+            {
+                var body = s.Find(sh.Body) ?? throw new InvalidOperationException("제거할 면을 선택하세요.");
+                if (sh.Thickness <= 0) throw new InvalidOperationException("두께는 0보다 커야 합니다.");
+                var pts = sh.Faces.Select(e => new V3(e[0], e[1], e[2])).ToList();
+                Replace(s, body, body.Solid.Shell(pts, sh.Outside ? sh.Thickness : -sh.Thickness));
                 break;
             }
         }
@@ -688,7 +798,7 @@ public static class Evaluator
     {
         int i = s.Bodies.FindIndex(x => x.Id == b.Id);
         if (i < 0) return;
-        if (solid.Info.Triangles == 0) s.Bodies.RemoveAt(i);
+        if (solid.Info.IsEmpty) s.Bodies.RemoveAt(i);
         else s.Bodies[i] = b.With(solid);
     }
 

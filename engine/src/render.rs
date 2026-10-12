@@ -32,6 +32,8 @@ pub const FLAG_NO_EDGES: u32 = 4;
 pub struct Item<'a> {
     pub mesh: &'a Mesh,
     pub smooth: &'a [V3],
+    /// B-rep face index per triangle (empty for plain meshes).
+    pub faces: &'a [u32],
     pub color: [f32; 3],
     pub flags: u32,
 }
@@ -71,13 +73,14 @@ pub struct Frame {
     pub color: Vec<[f32; 3]>,
     pub depth: Vec<f32>,
     pub id: Vec<u32>,
+    pub face: Vec<u32>,
     pub normal: Vec<[f32; 3]>,
 }
 
 impl Frame {
     pub fn new(w: usize, h: usize) -> Frame {
         let n = w * h;
-        Frame { w, h, color: vec![[0.0; 3]; n], depth: vec![f32::INFINITY; n], id: vec![0; n], normal: vec![[0.0; 3]; n] }
+        Frame { w, h, color: vec![[0.0; 3]; n], depth: vec![f32::INFINITY; n], id: vec![0; n], face: vec![0; n], normal: vec![[0.0; 3]; n] }
     }
 }
 
@@ -137,7 +140,7 @@ fn shade(base: [f32; 3], n: V3, flags: u32) -> [f32; 3] {
 }
 
 /// Rasterise one triangle into rows [y0, y1).
-fn raster(fr: &mut Band, cam: &Camera, tri: &[Shaded], face_n: V3, id: u32, item: &Item, ghost_pass: bool) {
+fn raster(fr: &mut Band, cam: &Camera, tri: &[Shaded], face_n: V3, id: u32, face: u32, item: &Item, ghost_pass: bool) {
     let s: Vec<(f64, f64)> = tri.iter().map(|t| cam.screen(t.v)).collect();
     for k in 1..tri.len() - 1 {
         let idx = [0, k, k + 1];
@@ -192,6 +195,7 @@ fn raster(fr: &mut Band, cam: &Camera, tri: &[Shaded], face_n: V3, id: u32, item
                     fr.depth[o] = z;
                     fr.color[o] = c;
                     fr.id[o] = id;
+                    fr.face[o] = face;
                     fr.normal[o] = [fnv.x as f32, fnv.y as f32, fnv.z as f32];
                 }
             }
@@ -206,6 +210,7 @@ struct Band<'a> {
     color: &'a mut [[f32; 3]],
     depth: &'a mut [f32],
     id: &'a mut [u32],
+    face: &'a mut [u32],
     normal: &'a mut [[f32; 3]],
 }
 
@@ -319,8 +324,13 @@ fn edges(fr: &mut Frame, flags: &[u32]) {
                 if id == 0 && jd == 0 {
                     continue;
                 }
+                let (fa, fb) = (fr.face[o], fr.face[q]);
                 let edge = if id != jd {
                     true
+                } else if fa != 0 && fb != 0 {
+                    // B-rep: draw the real edges between faces, plus silhouettes
+                    let dz = (fr.depth[o] - fr.depth[q]).abs() / fr.depth[o].min(fr.depth[q]).max(1e-6);
+                    fa != fb || dz > 0.02
                 } else {
                     let (a, b) = (fr.normal[o], fr.normal[q]);
                     let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -363,7 +373,7 @@ pub fn render(items: &[Item], cam: &Camera, w: usize, h: usize, opt: &Options) -
     let mut fr = Frame::new(w, h);
     background(&mut fr);
     // view-space geometry, shared by all bands
-    let prepared: Vec<Vec<(Vec<Shaded>, V3)>> = items
+    let prepared: Vec<Vec<(Vec<Shaded>, V3, u32)>> = items
         .iter()
         .map(|it| {
             it.mesh
@@ -383,7 +393,7 @@ pub fn render(items: &[Item], cam: &Camera, w: usize, h: usize, opt: &Options) -
                     if poly.len() < 3 {
                         return None;
                     }
-                    Some((poly, v3(fnorm.dot(cam.right), fnorm.dot(cam.up), fnorm.dot(cam.fwd))))
+                    Some((poly, v3(fnorm.dot(cam.right), fnorm.dot(cam.up), fnorm.dot(cam.fwd)), it.faces.get(i).copied().unwrap_or(0)))
                 })
                 .collect()
         })
@@ -400,6 +410,7 @@ pub fn render(items: &[Item], cam: &Camera, w: usize, h: usize, opt: &Options) -
             let mut color = fr.color.as_mut_slice();
             let mut depth = fr.depth.as_mut_slice();
             let mut id = fr.id.as_mut_slice();
+            let mut face = fr.face.as_mut_slice();
             let mut normal = fr.normal.as_mut_slice();
             let mut y0 = 0;
             while y0 < h {
@@ -408,20 +419,22 @@ pub fn render(items: &[Item], cam: &Camera, w: usize, h: usize, opt: &Options) -
                 let (c, rc) = color.split_at_mut(n);
                 let (d, rd) = depth.split_at_mut(n);
                 let (i, ri) = id.split_at_mut(n);
+                let (ff, rf) = face.split_at_mut(n);
                 let (nn, rn) = normal.split_at_mut(n);
                 color = rc;
                 depth = rd;
                 id = ri;
+                face = rf;
                 normal = rn;
                 let prepared = &prepared;
                 s.spawn(move || {
-                    let mut band = Band { w, y0, y1, color: c, depth: d, id: i, normal: nn };
+                    let mut band = Band { w, y0, y1, color: c, depth: d, id: i, face: ff, normal: nn };
                     for (k, it) in items.iter().enumerate() {
                         if (it.flags & FLAG_GHOST != 0) != ghost {
                             continue;
                         }
-                        for (poly, fnv) in &prepared[k] {
-                            raster(&mut band, cam, poly, *fnv, k as u32 + 1, it, ghost);
+                        for (poly, fnv, face) in &prepared[k] {
+                            raster(&mut band, cam, poly, *fnv, k as u32 + 1, *face, it, ghost);
                         }
                     }
                 });

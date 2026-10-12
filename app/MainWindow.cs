@@ -289,6 +289,7 @@ public sealed partial class MainWindow : Window
         m.Items.Add(new Separator());
         Item("내보내기...", () => RunCommand("export"));
         Item("메쉬 삽입...", () => RunCommand("insertmesh"));
+        Item("CAD 파일 삽입 (STEP, IGES)...", () => RunCommand("insertcad"));
         m.Items.Add(new Separator());
         Item("끝내기", Close);
         return m;
@@ -380,6 +381,11 @@ public sealed partial class MainWindow : Window
         ["measure"] = "측정",
         ["section"] = "단면 분석",
         ["insertmesh"] = "메쉬 삽입",
+        ["insertcad"] = "CAD 파일 삽입 (STEP, IGES)",
+        ["fillet"] = "모깎기",
+        ["chamfer"] = "모따기",
+        ["shell"] = "쉘",
+        ["presspull"] = "누르기/당기기",
         ["select"] = "선택",
         ["export"] = "내보내기",
         ["parameters"] = "매개변수 변경",
@@ -395,7 +401,7 @@ public sealed partial class MainWindow : Window
         ["finish"] = "스케치 마침",
     };
 
-    private static readonly HashSet<string> Unsupported = new() { "newcomponent", "joint", "section", "parameters", "trim", "dimension", "constraint" };
+    private static readonly HashSet<string> Unsupported = new() { "newcomponent", "joint", "section", "parameters", "trim", "dimension", "constraint", "presspull" };
 
     /// <summary>One toolbar group: a row of big icons with the group name (and ▾ menu) underneath.</summary>
     private Control Group(string title, string[] shown, string[] menu)
@@ -476,15 +482,15 @@ public sealed partial class MainWindow : Window
             row.Children.Add(Separator());
             row.Children.Add(Group("검사", new[] { "measure" }, new[] { "measure" }));
             row.Children.Add(Separator());
-            row.Children.Add(Group("삽입", new[] { "insertmesh" }, new[] { "insertmesh" }));
+            row.Children.Add(Group("삽입", new[] { "insertmesh", "insertcad" }, new[] { "insertmesh", "insertcad" }));
         }
         else
         {
             row.Children.Add(Group("작성", new[] { "sketch", "extrude", "revolve", "box", "rectpattern", "mirror" },
                 new[] { "newcomponent", "sketch", "-", "extrude", "revolve", "-", "box", "cylinder", "sphere", "torus", "-", "rectpattern", "circpattern", "mirror" }));
             row.Children.Add(Separator());
-            row.Children.Add(Group("수정", new[] { "combine", "scale", "appearance", "delete", "move" },
-                new[] { "combine", "scale", "-", "appearance", "-", "delete", "move" }));
+            row.Children.Add(Group("수정", new[] { "presspull", "fillet", "chamfer", "shell", "combine", "move" },
+                new[] { "presspull", "fillet", "chamfer", "shell", "-", "combine", "scale", "-", "appearance", "-", "delete", "move" }));
             row.Children.Add(Separator());
             row.Children.Add(Group("조립", new[] { "newcomponent", "joint" }, new[] { "newcomponent", "joint" }));
             row.Children.Add(Separator());
@@ -492,7 +498,7 @@ public sealed partial class MainWindow : Window
             row.Children.Add(Separator());
             row.Children.Add(Group("검사", new[] { "measure", "section" }, new[] { "measure", "section" }));
             row.Children.Add(Separator());
-            row.Children.Add(Group("삽입", new[] { "insertmesh" }, new[] { "insertmesh" }));
+            row.Children.Add(Group("삽입", new[] { "insertmesh", "insertcad" }, new[] { "insertmesh", "insertcad" }));
             row.Children.Add(Separator());
             row.Children.Add(Group("선택", new[] { "select" }, new[] { "select" }));
         }
@@ -589,7 +595,7 @@ public sealed partial class MainWindow : Window
                 var plane = pl;
                 _browserRows.Children.Add(BrowserRow(2, null, null, null, Icons.Line("plane", 14), plane, false, _hoverPlane == plane, () =>
                 {
-                    if (_pickPlane) EnterSketch(plane, -1);
+                    if (_pickPlane) EnterSketch(plane, -1, null);
                 }));
             }
             foreach (var ax in new[] { "X", "Y", "Z" })
@@ -819,7 +825,7 @@ public sealed partial class MainWindow : Window
         if (index < 0 || index >= _doc.Features.Count || _cmd != null) return;
         if (_sk != null) return;
         var f = _doc.Features[index];
-        if (f is SketchFeature sk) EnterSketch(sk.Plane, index);
+        if (f is SketchFeature sk) EnterSketch(sk.Plane, index, null);
         else OpenCommand(f.Copy(), index);
     }
 
@@ -935,26 +941,35 @@ public sealed partial class MainWindow : Window
 
     private void LookAt()
     {
-        if (_sk != null) LookAtPlane(_sk.Draft.Plane);
+        if (_sk != null) LookAtPlane(_sk.Draft);
         else View.SetView(-90, 0);
     }
 
-    private void LookAtPlane(string plane)
+    private void LookAtPlane(SketchFeature sk)
     {
-        switch (plane)
+        switch (sk.Plane)
         {
             case "XZ": View.SetView(-90, 0); break;
             case "YZ": View.SetView(0, 0); break;
-            default: View.SetView(-90, 89.9); break;
+            case "XY": View.SetView(-90, 89.9); break;
+            default:
+            {
+                // look straight at the face: the eye sits on its normal
+                var n = sk.Frame.N;
+                double pitch = Math.Asin(Math.Clamp(n.Z, -1, 1)) * 180 / Math.PI;
+                double yaw = Math.Abs(n.Z) > 0.999 ? -90 : Math.Atan2(n.Y, n.X) * 180 / Math.PI;
+                View.SetView(yaw, Math.Clamp(pitch, -89.9, 89.9));
+                break;
+            }
         }
     }
 
     private void ShowAbout()
     {
         var panel = new CommandPanel("정보", null, () => CloseDialog(), null);
-        panel.AddText("OpenShape CAD 0.1.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia)과 Rust로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
+        panel.AddText("OpenShape CAD 0.2.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
                       "Autodesk의 코드나 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다.\n\n" +
-                      "지원하지 않는 기능: 모깎기·모따기·쉘, 구성요소·조인트, 곡면·메쉬·판금 작업공간, 치수·구속조건, Autodesk 클라우드(.f3d)");
+                      "아직 지원하지 않는 기능: 누르기/당기기, 구성요소·조인트, 곡면·메쉬·판금 작업공간, 치수·구속조건, .f3d 직접 열기(클라우드 동기화의 STEP으로 열 수 있음)");
         ShowDialog(panel);
     }
 }

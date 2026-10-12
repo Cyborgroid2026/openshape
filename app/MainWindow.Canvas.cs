@@ -51,7 +51,7 @@ public sealed partial class MainWindow
     {
         var g = new GeometryGroup { FillRule = FillRule.EvenOdd };
         foreach (var loop in Profiles.Region(all, index))
-            if (PolyGeometry(f, loop, true) is { } pg) g.Children.Add(pg);
+            if (PolyGeometry(f, loop.Loop, true) is { } pg) g.Children.Add(pg);
         return g;
     }
 
@@ -106,6 +106,7 @@ public sealed partial class MainWindow
             DrawSketchSession(ctx);
             return;
         }
+        DrawEdges(ctx);
         var profileState = _cmd?.Base ?? State;
         var selected = _cmd?.Draft switch
         {
@@ -235,8 +236,93 @@ public sealed partial class MainWindow
 
     // ------------------------------------------------------------ canvas input
 
+    private V3[]? _hoverEdge;
+
+    /// <summary>Nearest B-rep edge to the cursor (within 8 px) among the bodies a command can pick from.</summary>
+    private (string body, V3 point, V3[] edge)? HitEdge(Point screen)
+    {
+        var bodies = (_cmd?.Base ?? State).Bodies.Where(b => !_doc.HiddenBodies.Contains(b.Id));
+        (string, V3, V3[])? best = null;
+        double bestD = 8;
+        foreach (var b in bodies)
+            foreach (var edge in b.Solid.Edges)
+                for (int k = 0; k + 1 < edge.Length; k++)
+                {
+                    if (View.Project(edge[k]) is not { } a || View.Project(edge[k + 1]) is not { } c) continue;
+                    var ab = c - a;
+                    double len2 = ab.X * ab.X + ab.Y * ab.Y;
+                    double t = len2 < 1e-9 ? 0 : Math.Clamp(((screen.X - a.X) * ab.X + (screen.Y - a.Y) * ab.Y) / len2, 0, 1);
+                    var q = a + ab * t;
+                    double d = Math.Sqrt((screen.X - q.X) * (screen.X - q.X) + (screen.Y - q.Y) * (screen.Y - q.Y));
+                    if (d < bestD)
+                    {
+                        bestD = d;
+                        var w = edge[k] + (edge[k + 1] - edge[k]) * t;
+                        best = (b.Id, w, edge);
+                    }
+                }
+        return best;
+    }
+
+    private static double DistToPolyline(V3 p, V3[] line)
+    {
+        double best = double.MaxValue;
+        for (int k = 0; k + 1 < line.Length; k++)
+        {
+            var ab = line[k + 1] - line[k];
+            double len2 = ab.Dot(ab);
+            double t = len2 < 1e-12 ? 0 : Math.Clamp((p - line[k]).Dot(ab) / len2, 0, 1);
+            best = Math.Min(best, (p - (line[k] + ab * t)).Length);
+        }
+        return line.Length == 1 ? (p - line[0]).Length : best;
+    }
+
+    /// <summary>Base-state edge closest to a stored edge point.</summary>
+    private V3[]? EdgeAt(string bodyId, V3 point)
+    {
+        var body = (_cmd?.Base ?? State).Find(bodyId);
+        if (body == null) return null;
+        V3[]? best = null;
+        double bd = 0.5 + 1e-3 * (body.Solid.Info.Max - body.Solid.Info.Min).Length;
+        foreach (var e in body.Solid.Edges)
+        {
+            double d = DistToPolyline(point, e);
+            if (d < bd) { bd = d; best = e; }
+        }
+        return best;
+    }
+
+    private void DrawEdges(DrawingContext ctx)
+    {
+        void Line(V3[] e, IPen pen)
+        {
+            var pts = new List<Point>();
+            foreach (var p in e)
+            {
+                if (View.Project(p) is not { } s) return;
+                pts.Add(s);
+            }
+            if (pts.Count > 1) ctx.DrawGeometry(null, pen, new PolylineGeometry(pts, false));
+        }
+        if (_cmd?.Draft is FilletFeature fl)
+            foreach (var e in fl.Edges)
+                if (EdgeAt(fl.Body, new V3(e[0], e[1], e[2])) is { } line) Line(line, new Pen(new SolidColorBrush(Color.FromRgb(6, 150, 215)), 3.5));
+        if (_cmd?.Draft is ShellFeature sh)
+            foreach (var f in sh.Faces)
+                if (View.Project(new V3(f[0], f[1], f[2])) is { } s)
+                    ctx.DrawEllipse(new SolidColorBrush(Color.FromRgb(6, 150, 215)), new Pen(Brushes.White, 1.5), s, 5, 5);
+        if (_hoverEdge != null) Line(_hoverEdge, new Pen(new SolidColorBrush(Color.FromArgb(200, 90, 180, 255)), 3));
+    }
+
     private void OnCanvasHover(Point p)
     {
+        if (_cmd?.SelectKind == "edges")
+        {
+            var h = HitEdge(p)?.edge;
+            if (!ReferenceEquals(h, _hoverEdge)) { _hoverEdge = h; View.InvalidateVisual(); }
+            return;
+        }
+        if (_hoverEdge != null) { _hoverEdge = null; View.InvalidateVisual(); }
         if (_sk != null)
         {
             var snapped = SketchPoint(p, out bool snap);
@@ -274,7 +360,15 @@ public sealed partial class MainWindow
         }
         if (_pickPlane)
         {
-            if (HitOriginPlane(p) is { } pl) EnterSketch(pl, -1);
+            // a planar face of a body, or one of the origin planes
+            var (fi, ft, face) = View.PickFace(p);
+            if (HitOriginPlane(p) is { } pl && (fi < 0 || HitPlane(PlaneFrame.Of(pl, 0), p)?.t < ft)) EnterSketch(pl, -1, null);
+            else if (fi >= 0 && face > 0 && fi < _itemBodies.Count && State.Find(_itemBodies[fi]) is { } fb)
+            {
+                var (o, d) = View.Ray(p);
+                if (fb.Solid.FaceFrame(o + d * ft) is { } frame) EnterSketch("face", -1, frame);
+                else SetPrompt("평면인 면이나 원점 평면을 선택하세요");
+            }
             return;
         }
         var (r, t) = HitProfile(p);
@@ -284,7 +378,17 @@ public sealed partial class MainWindow
 
         if (_cmd != null)
         {
-            if (_cmd.SelectKind == "profiles" && r != null) CommandPickProfile(r);
+            if (_cmd.SelectKind == "edges") { if (HitEdge(p) is { } he) CommandPickEdge(he.body, he.point); }
+            else if (_cmd.SelectKind == "faces")
+            {
+                var (fi, ft, face) = View.PickFace(p);
+                if (fi >= 0 && face > 0 && fi < _itemBodies.Count)
+                {
+                    var (o, d) = View.Ray(p);
+                    CommandPickFace(_itemBodies[fi], o + d * ft);
+                }
+            }
+            else if (_cmd.SelectKind == "profiles" && r != null) CommandPickProfile(r);
             else if (_cmd.SelectKind is "bodies" or "target" or "tools" && body != null) CommandPickBody(body);
             return;
         }
@@ -371,7 +475,7 @@ public sealed partial class MainWindow
         View.InvalidateVisual();
     }
 
-    public void EnterSketch(string plane, int editIndex)
+    public void EnterSketch(string plane, int editIndex, PlaneFrame? face)
     {
         CancelCommand();
         _pickPlane = false;
@@ -379,14 +483,14 @@ public sealed partial class MainWindow
         SetPrompt(null);
         SketchFeature draft;
         if (editIndex >= 0) draft = (SketchFeature)_doc.Features[editIndex].Copy();
-        else draft = new SketchFeature { Name = _doc.NextName("sketch"), Plane = plane, Offset = _pendingOffset };
+        else draft = new SketchFeature { Name = _doc.NextName("sketch"), Plane = plane, Offset = _pendingOffset, Custom = face?.ToArray() };
         draft.Visible = true;
         var baseState = Evaluator.Run(_doc.Features, editIndex >= 0 ? editIndex : _doc.Marker);
         _sk = new SketchSession { Draft = draft, EditIndex = editIndex, Base = baseState };
         _preview = baseState;
         _selBodies.Clear();
         _selProfiles.Clear();
-        LookAtPlane(draft.Plane);
+        LookAtPlane(draft);
         BuildToolbarGroups();
         ShowSketchPalette();
         UpdateItems();

@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 pub struct Solid {
     pub mesh: Mesh,
     pub smooth: Vec<V3>,
+    pub faces: Vec<u32>,
 }
 
 #[derive(Default)]
@@ -32,8 +33,12 @@ fn reg() -> &'static Mutex<Registry> {
 }
 
 pub fn add(mesh: Mesh) -> u32 {
+    add_with_faces(mesh, Vec::new())
+}
+
+pub fn add_with_faces(mesh: Mesh, faces: Vec<u32>) -> u32 {
     let smooth = render::smooth_normals(&mesh);
-    let s = Arc::new(Solid { mesh, smooth });
+    let s = Arc::new(Solid { mesh, smooth, faces });
     let mut r = reg().lock().unwrap();
     let h = r.next;
     r.next = r.next.wrapping_add(1).max(1);
@@ -128,6 +133,39 @@ pub unsafe extern "C" fn osc_revolve(f: *const f64, pts: *const f64, counts: *co
     }
 }
 
+/// Display mesh from a triangulated B-rep: 9 doubles per triangle plus its face index.
+///
+/// # Safety
+/// `xyz` has 9n doubles, `faces` n entries.
+#[no_mangle]
+pub unsafe extern "C" fn osc_mesh(xyz: *const f64, faces: *const u32, n: i32) -> u32 {
+    let n = n.max(0) as usize;
+    let p = std::slice::from_raw_parts(xyz, n * 9);
+    let f = std::slice::from_raw_parts(faces, n).to_vec();
+    let tris = (0..n).map(|i| [0, 1, 2].map(|k| v3(p[i * 9 + k * 3], p[i * 9 + k * 3 + 1], p[i * 9 + k * 3 + 2]))).collect();
+    add_with_faces(Mesh { tris }, f)
+}
+
+/// Copy a mesh's triangles out (9 doubles each); returns the count, or -1. Pass null to query.
+///
+/// # Safety
+/// `out` is null or holds 9 * count doubles.
+#[no_mangle]
+pub unsafe extern "C" fn osc_tris(h: u32, out: *mut f64) -> i32 {
+    let Some(s) = get(h) else { return -1 };
+    if !out.is_null() {
+        let o = std::slice::from_raw_parts_mut(out, s.mesh.tris.len() * 9);
+        for (i, t) in s.mesh.tris.iter().enumerate() {
+            for k in 0..3 {
+                o[i * 9 + k * 3] = t[k].x;
+                o[i * 9 + k * 3 + 1] = t[k].y;
+                o[i * 9 + k * 3 + 2] = t[k].z;
+            }
+        }
+    }
+    s.mesh.tris.len() as i32
+}
+
 // ------------------------------------------------------------------ operations
 
 /// 0 union, 1 subtract, 2 intersect. Returns 0 when an input is missing.
@@ -171,6 +209,7 @@ struct Pick {
     w: usize,
     h: usize,
     id: Vec<u32>,
+    face: Vec<u32>,
     depth: Vec<f32>,
 }
 
@@ -202,13 +241,13 @@ pub unsafe extern "C" fn osc_render(handles: *const u32, colors: *const f32, fla
         cy: c[14],
     };
     let solids: Vec<Option<Arc<Solid>>> = hs.iter().map(|&k| get(k)).collect();
-    let empty = Solid { mesh: Mesh::default(), smooth: Vec::new() };
+    let empty = Solid { mesh: Mesh::default(), smooth: Vec::new(), faces: Vec::new() };
     let items: Vec<render::Item> = solids
         .iter()
         .enumerate()
         .map(|(i, s)| {
             let s = s.as_deref().unwrap_or(&empty);
-            render::Item { mesh: &s.mesh, smooth: &s.smooth, color: [cs[i * 3], cs[i * 3 + 1], cs[i * 3 + 2]], flags: fs[i] }
+            render::Item { mesh: &s.mesh, smooth: &s.smooth, faces: &s.faces, color: [cs[i * 3], cs[i * 3 + 1], cs[i * 3 + 2]], flags: fs[i] }
         })
         .collect();
     let opt = render::Options { grid: opts & 1 != 0, grid_step, edges: opts & 2 != 0 };
@@ -220,15 +259,16 @@ pub unsafe extern "C" fn osc_render(handles: *const u32, colors: *const f32, fla
         }
         px[i * 4 + 3] = 255;
     }
-    *last_pick().lock().unwrap() = Some(Pick { w, h, id: fr.id, depth: fr.depth });
+    *last_pick().lock().unwrap() = Some(Pick { w, h, id: fr.id, face: fr.face, depth: fr.depth });
 }
 
-/// Item index + 1 under pixel (x, y) of the last render (0 = background); `depth` gets the view depth.
+/// Item index + 1 under pixel (x, y) of the last render (0 = background); `depth` gets the view
+/// depth and `face` the B-rep face index (0 for plain meshes).
 ///
 /// # Safety
-/// `depth` may be null or point to one double.
+/// `depth` and `face` may be null or point to one value.
 #[no_mangle]
-pub unsafe extern "C" fn osc_pick(x: i32, y: i32, depth: *mut f64) -> u32 {
+pub unsafe extern "C" fn osc_pick(x: i32, y: i32, depth: *mut f64, face: *mut u32) -> u32 {
     let g = last_pick().lock().unwrap();
     let Some(p) = g.as_ref() else { return 0 };
     if x < 0 || y < 0 || x as usize >= p.w || y as usize >= p.h {
@@ -237,6 +277,9 @@ pub unsafe extern "C" fn osc_pick(x: i32, y: i32, depth: *mut f64) -> u32 {
     let o = y as usize * p.w + x as usize;
     if !depth.is_null() {
         *depth = p.depth[o] as f64;
+    }
+    if !face.is_null() {
+        *face = p.face[o];
     }
     p.id[o]
 }
@@ -388,8 +431,8 @@ mod tests {
         let mut px = vec![0u8; 200 * 150 * 4];
         unsafe { osc_render([a].as_ptr(), [0.7f32, 0.7, 0.7].as_ptr(), [0u32].as_ptr(), 1, cam.as_ptr(), 200, 150, px.as_mut_ptr(), 3, 10.0) };
         let mut d = 0.0;
-        assert_eq!(unsafe { osc_pick(100, 75, &mut d) }, 1);
+        assert_eq!(unsafe { osc_pick(100, 75, &mut d, std::ptr::null_mut()) }, 1);
         assert!(d > 50.0 && d < 110.0);
-        assert_eq!(unsafe { osc_pick(2, 2, std::ptr::null_mut()) }, 0);
+        assert_eq!(unsafe { osc_pick(2, 2, std::ptr::null_mut(), std::ptr::null_mut()) }, 0);
     }
 }

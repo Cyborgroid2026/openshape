@@ -188,7 +188,8 @@ var moved = w.State.Bodies.Select(b => b.Solid.Info).OrderByDescending(i => i.Ma
 Check(Math.Abs(moved.Min.Z - 25) < 1e-6, "move/copy lifts the selected body by 25 mm");
 
 // --- appearance and measure
-Click(Tip("모양"));
+w.RunCommand("appearance");
+Pump();
 Click(Tip("플라스틱 - 빨간색"));
 Check(w.Document.BodyColors.Values.Contains("#D9342B"), "appearance colours the selected body");
 Key(Avalonia.Input.Key.Escape);
@@ -233,6 +234,105 @@ Check(w.State.Bodies.Count == 3, "moving the marker to the end restores everythi
 w.View.SetView(-55, 28);
 w.FitAll();
 Shot("final_iso");
+// ================= B-rep features (OpenCASCADE) =================
+
+double BodyVol(int i) => w.State.Bodies[i].Solid.Info.Volume;
+
+// fillet inserted in the middle of the timeline (after the cut), then replayed forward
+w.MoveMarker(3);
+double plateBefore = BodyVol(0);
+w.View.SetView(-55, 28);
+w.FitAll();
+Pump();
+Click(Tip("모깎기"));
+Check(w.Command?.SelectKind == "edges", "fillet dialog picks edges");
+Click(World(new V3(-30, 0, 20)));
+Check(w.Command?.Draft is FilletFeature { Edges.Count: 1 }, "clicking an edge selects it for the fillet");
+SetField("반지름", "3");
+w.RefreshPreview();
+Shot("fillet_preview");
+Click(Text("확인"));
+double fillet = (1 - Math.PI / 4) * 9 * 40;
+Check(Near(plateBefore - BodyVol(0), fillet, 0.02), $"fillet r=3 on a 40 mm edge removes {plateBefore - BodyVol(0):0.0} ≈ {fillet:0.0} mm³");
+
+plateBefore = BodyVol(0);
+Click(Tip("모따기"));
+Click(World(new V3(30, 15, 20)));
+SetField("거리", "2");
+w.RefreshPreview();
+Click(Text("확인"));
+Check(Near(plateBefore - BodyVol(0), 0.5 * 4 * 10, 0.02), $"chamfer 2 mm on a 10 mm edge removes {plateBefore - BodyVol(0):0.0} ≈ 20 mm³");
+
+// sketch on the plate's top face and cut a pocket
+Click(Tip("스케치 작성"));
+Click(World(new V3(-18, 12, 20)));
+Check(w.InSketch && w.Sketch!.Draft.Plane == "face", "clicking a planar body face starts a sketch on it");
+var ff = w.Sketch!.Draft.Frame;
+Check(Math.Abs(ff.N.Z - 1) < 1e-9 && Math.Abs(ff.O.Z - 20) < 1e-9, "face sketch plane is the top face (normal +Z, z = 20)");
+var c2 = ff.Project(new V3(-18, 12, 20));
+Click(Tip("중심 지름 원"));
+Click(SketchPt(c2.X, c2.Y));
+Click(SketchPt(c2.X + 4, c2.Y));
+Click(Tip("스케치 마침"));
+var sk3 = w.Document.Features.OfType<SketchFeature>().Last(f => f.Plane == "face");
+plateBefore = BodyVol(0);
+Click(Tip("돌출"));
+Click(World(sk3.Frame.At(c2)));
+SetField("거리", "-5");
+SetCombo("작업", 1);
+w.RefreshPreview();
+Click(Text("확인"));
+Check(Near(plateBefore - BodyVol(0), Math.PI * 16 * 5, 0.01), $"pocket cut from the face sketch removes {plateBefore - BodyVol(0):0} ≈ {Math.PI * 80:0} mm³");
+Shot("face_pocket");
+
+// replay the rest of the timeline on top of the inserted features
+w.MoveMarker(w.Document.Features.Count);
+Check(w.State.Bodies.Count == 3 && w.Document.Features.All(f => f.Error == null), "later features still rebuild after inserting fillet/chamfer/pocket");
+
+// shell a new box from its top face
+Click(Tip("상자"));
+SetField("길이", "30");
+SetField("너비", "30");
+SetField("높이", "30");
+SetField("X", "200");
+w.RefreshPreview();
+Click(Text("확인"));
+w.FitAll();
+Pump();
+Click(Tip("쉘"));
+w.View.SetView(-55, 40);
+Pump();
+Click(World(new V3(200, 0, 30)));
+Check(w.Command?.Draft is ShellFeature { Faces.Count: 1 }, "clicking the box top selects the face to remove");
+SetField("내부 두께", "2");
+w.RefreshPreview();
+Click(Text("확인"));
+var boxVol = w.State.Bodies.Last().Solid.Info.Volume;
+Check(Near(boxVol, 27000 - 26 * 26 * 28, 0.001), $"shell 2 mm leaves {boxVol:0} ≈ {27000 - 26 * 26 * 28} mm³");
+w.FitAll();
+Shot("shell");
+
+// STEP round trip
+var stepFile = Path.Combine(outDir, "design.step");
+int nb = w.State.Bodies.Count;
+double total = Volume();
+Check(w.ExportTo(stepFile, 3, false) == nb && new FileInfo(stepFile).Length > 1000, "STEP export writes every body");
+w.InsertFilePath(stepFile);
+Check(w.State.Bodies.Count == nb * 2 && Near(Volume(), total * 2, 1e-4), "re-imported STEP has the same exact bodies");
+
+// a real Fusion cloud design (STEP from the cloud sync), when present on this machine
+var cloud = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "fusion-webviewer", "exchange", "cloud", "XL_430_new", "XL_430_new.step");
+if (File.Exists(cloud))
+{
+    w.OpenPath(cloud);
+    Pump();
+    Check(w.State.Bodies.Count > 0 && Volume() > 0 && w.Document.Features[0].Error == null, $"Fusion design XL_430_new.step opens ({w.State.Bodies.Count} bodies, {Volume() / 1000:0.0} cm³)");
+    w.View.SetView(-55, 28);
+    w.FitAll();
+    Shot("fusion_step");
+}
+else Console.WriteLine("SKIP  Fusion cloud STEP not found");
+
 
 Console.WriteLine(failures.Count == 0 ? "ALL PASSED" : $"{failures.Count} FAILED");
 return failures.Count == 0 ? 0 : 1;

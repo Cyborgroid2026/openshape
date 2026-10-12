@@ -108,12 +108,20 @@ public sealed unsafe class Viewport : Control
     /// <summary>Index of the item under p (or -1) and its distance along the view ray.</summary>
     public (int index, double rayDistance) Pick(Point p)
     {
+        var (i, t, _) = PickFace(p);
+        return (i, t);
+    }
+
+    /// <summary>Item, ray distance and B-rep face index (1-based, 0 = none) under p.</summary>
+    public (int index, double rayDistance, int face) PickFace(Point p)
+    {
         EnsureRendered();
         double depth;
-        uint id = Native.osc_pick((int)p.X, (int)p.Y, &depth);
-        if (id == 0) return (-1, double.PositiveInfinity);
+        uint face;
+        uint id = Native.osc_pick((int)p.X, (int)p.Y, &depth, &face);
+        if (id == 0) return (-1, double.PositiveInfinity, 0);
         var (_, dir) = Ray(p);
-        return ((int)id - 1, depth / Math.Max(1e-9, dir.Dot(Cam.Forward)));
+        return ((int)id - 1, depth / Math.Max(1e-9, dir.Dot(Cam.Forward)), (int)face);
     }
 
     public (V3 origin, V3 dir) Ray(Point p) => Cam.Ray(p.X, p.Y, Bounds.Width, Bounds.Height);

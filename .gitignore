@@ -6,3 +6,5 @@ uitest/obj/
 build/
 build-uitest/
 dist/
+build-deps/
+occt/build/

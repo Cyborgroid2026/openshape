@@ -112,6 +112,12 @@ public sealed partial class MainWindow
                 OpenCommand(new CombineFeature { Name = _doc.NextName("combine"), Target = sel.FirstOrDefault() ?? "", Tools = sel.Skip(1).ToList() }, -1);
                 break;
             }
+            case "fillet" or "chamfer":
+                OpenCommand(new FilletFeature { Name = _doc.NextName(id), Chamfer = id == "chamfer", Size = id == "chamfer" ? 1 : 2 }, -1);
+                break;
+            case "shell":
+                OpenCommand(new ShellFeature { Name = _doc.NextName("shell") }, -1);
+                break;
             case "scale":
                 OpenCommand(new ScaleFeature { Name = _doc.NextName("scale"), Bodies = _selBodies.ToList() }, -1);
                 break;
@@ -134,7 +140,10 @@ public sealed partial class MainWindow
                 ShowMeasure();
                 break;
             case "insertmesh":
-                _ = InsertMesh();
+                _ = InsertFile(false);
+                break;
+            case "insertcad":
+                _ = InsertFile(true);
                 break;
             case "export":
                 ShowExport();
@@ -176,6 +185,8 @@ public sealed partial class MainWindow
         {
             ExtrudeFeature or RevolveFeature => "profiles",
             CombineFeature c => string.IsNullOrEmpty(c.Target) ? "target" : "tools",
+            FilletFeature => "edges",
+            ShellFeature => "faces",
             PrimitiveFeature => "",
             _ => "bodies",
         };
@@ -303,6 +314,19 @@ public sealed partial class MainWindow
                 p.AddNumber("축척 계수", sc.Factor, "", v => sc.Factor = v, Changed);
                 break;
 
+            case FilletFeature fl:
+                p.AddInfo("유형", fl.Chamfer ? "모따기 - 동일 거리" : "모깎기 - 일정 반지름");
+                Select("모서리", "edges", fl.Edges.Count, "모서리", () => { fl.Edges.Clear(); fl.Body = ""; });
+                p.AddCheck("모든 모서리", fl.AllEdges, v => { fl.AllEdges = v; if (v && fl.Body == "" && c.Base!.Bodies.Count > 0) fl.Body = c.Base.Bodies[^1].Id; Changed(); });
+                p.AddNumber(fl.Chamfer ? "거리" : "반지름", fl.Size, "mm", v => fl.Size = v, Changed);
+                break;
+
+            case ShellFeature sh:
+                Select("면/본체", "faces", sh.Faces.Count, "면", () => { sh.Faces.Clear(); sh.Body = ""; });
+                p.AddNumber(sh.Outside ? "외부 두께" : "내부 두께", sh.Thickness, "mm", v => sh.Thickness = v, Changed);
+                p.AddCombo("방향", new[] { "내부", "외부" }, sh.Outside ? 1 : 0, i => { sh.Outside = i == 1; BuildCommandPanel(); Changed(); });
+                break;
+
             case DeleteFeature del:
                 Select("객체", "bodies", del.Bodies.Count, "본체", () => del.Bodies.Clear());
                 break;
@@ -391,6 +415,35 @@ public sealed partial class MainWindow
         RefreshPreview();
     }
 
+    private void CommandPickEdge(string bodyId, V3 point)
+    {
+        if (_cmd?.Draft is not FilletFeature fl) return;
+        if (fl.Body != bodyId)
+        {
+            fl.Body = bodyId;
+            fl.Edges.Clear();
+        }
+        var edge = EdgeAt(bodyId, point);
+        int existing = edge == null ? -1 : fl.Edges.FindIndex(e => DistToPolyline(new V3(e[0], e[1], e[2]), edge) < 1e-6 + 1e-4 * (edge[0] - edge[^1]).Length + 0.01);
+        if (existing >= 0) fl.Edges.RemoveAt(existing);
+        else fl.Edges.Add(new[] { point.X, point.Y, point.Z });
+        BuildCommandPanel();
+        RefreshPreview();
+    }
+
+    private void CommandPickFace(string bodyId, V3 point)
+    {
+        if (_cmd?.Draft is not ShellFeature sh) return;
+        if (sh.Body != bodyId)
+        {
+            sh.Body = bodyId;
+            sh.Faces.Clear();
+        }
+        sh.Faces.Add(new[] { point.X, point.Y, point.Z });
+        BuildCommandPanel();
+        RefreshPreview();
+    }
+
     private void CommandPickBody(string id)
     {
         var c = _cmd;
@@ -443,7 +496,7 @@ public sealed partial class MainWindow
                     var i = b.Solid.Info;
                     vol += i.Volume;
                     area += i.Area;
-                    tris += i.Triangles;
+                    tris += i.Solids;
                     lo = new V3(Math.Min(lo.X, i.Min.X), Math.Min(lo.Y, i.Min.Y), Math.Min(lo.Z, i.Min.Z));
                     hi = new V3(Math.Max(hi.X, i.Max.X), Math.Max(hi.Y, i.Max.Y), Math.Max(hi.Z, i.Max.Z));
                 }
@@ -456,7 +509,7 @@ public sealed partial class MainWindow
                 p.AddInfo("크기 Z", $"{F(hi.Z - lo.Z)} mm");
                 p.AddInfo("최소점", $"{F(lo.X)}, {F(lo.Y)}, {F(lo.Z)}");
                 p.AddInfo("최대점", $"{F(hi.X)}, {F(hi.Y)}, {F(hi.Z)}");
-                p.AddInfo("삼각형", F(tris));
+                p.AddInfo("솔리드", F(tris));
             }
             ShowDialog(p);
         };
@@ -528,9 +581,9 @@ public sealed partial class MainWindow
         _cmd.Rebuild = () =>
         {
             var p = new CommandPanel("내보내기", "export", () => _ = ExportDialog(), CancelCommand, "내보내기");
-            p.AddCombo("유형", new[] { "STL 파일 (*.stl)", "OBJ 파일 (*.obj)", "USD 파일 (*.usda)" }, _exportFormat, i => _exportFormat = i);
+            p.AddCombo("유형", new[] { "STL 파일 (*.stl)", "OBJ 파일 (*.obj)", "USD 파일 (*.usda)", "STEP 파일 (*.step)" }, _exportFormat, i => _exportFormat = i);
             p.AddCombo("대상", new[] { "보이는 모든 본체", "선택한 본체" }, _exportSelected ? 1 : 0, i => _exportSelected = i == 1);
-            p.AddText("단위는 mm입니다. USD는 Z 위쪽, metersPerUnit = 0.001로 저장되어 Isaac Sim에서 그대로 열 수 있습니다.");
+            p.AddText("단위는 mm입니다. USD는 Z 위쪽, metersPerUnit = 0.001로 저장되어 Isaac Sim에서 그대로 열 수 있습니다. STEP은 다른 CAD(Fusion 포함)에서 정확한 형상으로 열립니다.");
             ShowDialog(p);
         };
         _cmd.Rebuild();
@@ -538,7 +591,7 @@ public sealed partial class MainWindow
 
     private async Task ExportDialog()
     {
-        string ext = new[] { "stl", "obj", "usda" }[_exportFormat];
+        string ext = new[] { "stl", "obj", "usda", "step" }[_exportFormat];
         var f = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "내보내기",
@@ -562,21 +615,35 @@ public sealed partial class MainWindow
         return Solid.Export(bodies, path, (uint)format) ? bodies.Count : -1;
     }
 
-    private async Task InsertMesh()
+    /// <summary>Where Fusion cloud designs land as STEP (fusion-webviewer cloud sync), when present.</summary>
+    private static string CloudFolder => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "fusion-webviewer", "exchange", "cloud");
+
+    private static readonly FilePickerFileType CadTypes = new("CAD 파일 (STEP, IGES)") { Patterns = new[] { "*.step", "*.stp", "*.STEP", "*.STP", "*.iges", "*.igs" } };
+    private static readonly FilePickerFileType MeshTypes = new("메쉬 (STL, OBJ)") { Patterns = new[] { "*.stl", "*.STL", "*.obj" } };
+
+    private async Task<IStorageFolder?> StartFolder(bool cad) =>
+        cad && Directory.Exists(CloudFolder) ? await StorageProvider.TryGetFolderFromPathAsync(CloudFolder) : null;
+
+    private async Task InsertFile(bool cad)
     {
         var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "메쉬 삽입",
-            FileTypeFilter = new[] { new FilePickerFileType("메쉬 (STL, OBJ)") { Patterns = new[] { "*.stl", "*.obj" } } },
+            Title = cad ? "CAD 파일 삽입" : "메쉬 삽입",
+            FileTypeFilter = new[] { cad ? CadTypes : MeshTypes },
+            SuggestedStartLocation = await StartFolder(cad),
         });
-        if (files.Count > 0 && files[0].TryGetLocalPath() is { } p) InsertMeshFile(p);
+        if (files.Count > 0 && files[0].TryGetLocalPath() is { } p) InsertFilePath(p);
     }
 
-    public void InsertMeshFile(string path) => Commit(() =>
+    public void InsertFilePath(string path)
     {
-        _doc.Features.Insert(_doc.Marker, new ImportFeature { Name = _doc.NextName("insertmesh"), Path = path });
-        _doc.Marker++;
-    });
+        Commit(() =>
+        {
+            _doc.Features.Insert(_doc.Marker, new ImportFeature { Name = _doc.NextName("insertmesh"), Path = path });
+            _doc.Marker++;
+        });
+        FitAll();
+    }
 
     // ------------------------------------------------------------ keys
 
@@ -631,6 +698,7 @@ public sealed partial class MainWindow
     // ------------------------------------------------------------ files
 
     private static readonly FilePickerFileType ProjectType = new("OpenShape CAD 디자인") { Patterns = new[] { "*.osc" } };
+    private static readonly FilePickerFileType AnyType = new("열 수 있는 모든 파일") { Patterns = new[] { "*.osc", "*.step", "*.stp", "*.STEP", "*.STP", "*.iges", "*.igs", "*.stl", "*.STL", "*.obj" } };
 
     private async Task<bool> ConfirmDiscard()
     {
@@ -663,7 +731,7 @@ public sealed partial class MainWindow
     private async Task OpenFile()
     {
         if (!await ConfirmDiscard()) return;
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "열기", FileTypeFilter = new[] { ProjectType } });
+        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "열기", FileTypeFilter = new[] { AnyType, ProjectType, CadTypes, MeshTypes } });
         if (files.Count > 0 && files[0].TryGetLocalPath() is { } p) OpenPath(p);
     }
 
@@ -671,7 +739,16 @@ public sealed partial class MainWindow
     {
         try
         {
-            ResetTo(Doc.Load(File.ReadAllText(p)), p);
+            if (p.EndsWith(".osc", StringComparison.OrdinalIgnoreCase)) ResetTo(Doc.Load(File.ReadAllText(p)), p);
+            else
+            {
+                // a STEP/IGES/mesh file opens as a new design that inserts it
+                var d = new Doc();
+                d.Features.Add(new ImportFeature { Name = "삽입1", Path = p });
+                d.Marker = 1;
+                ResetTo(d, null);
+                if (d.Features[0].Error is { } err) throw new InvalidOperationException(err);
+            }
             FitAll();
         }
         catch (Exception ex)

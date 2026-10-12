@@ -3,124 +3,309 @@ using System.Text;
 
 namespace OpenShape;
 
+/// <summary>Rust engine: display meshes, viewport rendering, picking, mesh files.</summary>
 internal static unsafe class Native
 {
     private const string Lib = "openshape_engine";
 
     [DllImport(Lib)] public static extern void osc_free(uint h);
     [DllImport(Lib)] public static extern uint osc_count();
-    [DllImport(Lib)] public static extern uint osc_box(double x0, double y0, double z0, double x1, double y1, double z1);
-    [DllImport(Lib)] public static extern uint osc_cylinder(double x, double y, double z, double r, double h);
-    [DllImport(Lib)] public static extern uint osc_cone(double x, double y, double z, double r1, double r2, double h);
-    [DllImport(Lib)] public static extern uint osc_sphere(double x, double y, double z, double r);
-    [DllImport(Lib)] public static extern uint osc_torus(double x, double y, double z, double major, double minor);
-    [DllImport(Lib)] public static extern uint osc_extrude(double* frame, double* pts, int* counts, int n, double h0, double h1);
-    [DllImport(Lib)] public static extern uint osc_revolve(double* frame, double* pts, int* counts, int n, double ax, double ay, double dx, double dy, double angle);
-    [DllImport(Lib)] public static extern uint osc_boolean(uint a, uint b, uint op);
-    [DllImport(Lib)] public static extern uint osc_transform(uint h, double* m);
+    [DllImport(Lib)] public static extern uint osc_mesh(double* xyz, uint* faces, int n);
+    [DllImport(Lib)] public static extern int osc_tris(uint h, double* xyz);
     [DllImport(Lib)] public static extern int osc_info(uint h, double* out8);
     [DllImport(Lib)] public static extern void osc_render(uint* handles, float* colors, uint* flags, int n, double* cam, int w, int h, byte* outRgba, uint opts, double gridStep);
-    [DllImport(Lib)] public static extern uint osc_pick(int x, int y, double* depth);
+    [DllImport(Lib)] public static extern uint osc_pick(int x, int y, double* depth, uint* face);
     [DllImport(Lib)] public static extern int osc_export(uint* handles, byte* names, int n, byte* path, uint format);
     [DllImport(Lib)] public static extern uint osc_import(byte* path, uint format);
 
     public static byte[] Utf8Z(string s) => Encoding.UTF8.GetBytes(s + "\0");
 }
 
-public readonly record struct SolidInfo(int Triangles, double Volume, double Area, V3 Min, V3 Max);
+/// <summary>OpenCASCADE B-rep kernel (C++ shim).</summary>
+internal static unsafe class Occt
+{
+    private const string Lib = "openshape_occt";
 
-public enum BoolOp : uint { Union = 0, Subtract = 1, Intersect = 2 }
+    [DllImport(Lib)] public static extern void ok_init();
+    [DllImport(Lib)] public static extern void ok_free(uint h);
+    [DllImport(Lib)] public static extern int ok_error(byte* buf, int len);
+    [DllImport(Lib)] public static extern uint ok_box(double x0, double y0, double z0, double x1, double y1, double z1);
+    [DllImport(Lib)] public static extern uint ok_cylinder(double x, double y, double z, double r, double h);
+    [DllImport(Lib)] public static extern uint ok_cone(double x, double y, double z, double r1, double r2, double h);
+    [DllImport(Lib)] public static extern uint ok_sphere(double x, double y, double z, double r);
+    [DllImport(Lib)] public static extern uint ok_torus(double x, double y, double z, double major, double minor);
+    [DllImport(Lib)] public static extern uint ok_profile_face(double* frame, int* kinds, double* data, int* loopCounts, int nloops);
+    [DllImport(Lib)] public static extern uint ok_prism(uint face, double dx, double dy, double dz, double h0, double h1);
+    [DllImport(Lib)] public static extern uint ok_revol(uint face, double ox, double oy, double oz, double dx, double dy, double dz, double deg);
+    [DllImport(Lib)] public static extern uint ok_bool(uint a, uint b, int op);
+    [DllImport(Lib)] public static extern uint ok_transform(uint h, double* m);
+    [DllImport(Lib)] public static extern uint ok_blend(uint h, int kind, double* pts, int n, double size);
+    [DllImport(Lib)] public static extern uint ok_shell(uint h, double* pts, int n, double thickness);
+    [DllImport(Lib)] public static extern int ok_info(uint h, double* out8);
+    [DllImport(Lib)] public static extern int ok_mesh(uint h, double relDeflection);
+    [DllImport(Lib)] public static extern void ok_mesh_copy(double* xyz, uint* faceIds);
+    [DllImport(Lib)] public static extern int ok_edges(uint h, double relDeflection);
+    [DllImport(Lib)] public static extern int ok_edges_points();
+    [DllImport(Lib)] public static extern void ok_edges_copy(double* xyz, int* counts);
+    [DllImport(Lib)] public static extern int ok_face_frame(uint h, double x, double y, double z, double* out12);
+    [DllImport(Lib)] public static extern uint ok_read(byte* path, int kind);
+    [DllImport(Lib)] public static extern int ok_solids(uint h, uint* outHandles, int max);
+    [DllImport(Lib)] public static extern int ok_write_step(uint* hs, int n, byte* path);
+    [DllImport(Lib)] public static extern uint ok_from_mesh(double* tris, int n);
 
-/// <summary>An immutable solid owned by the Rust engine; freed when collected.</summary>
+    private static bool _init;
+
+    public static void Init()
+    {
+        if (_init) return;
+        _init = true;
+        ok_init();
+    }
+
+    public static string LastError()
+    {
+        byte* buf = stackalloc byte[512];
+        int n = ok_error(buf, 512);
+        return n == 0 ? "형상 연산에 실패했습니다" : Encoding.UTF8.GetString(buf, Math.Min(n, 511));
+    }
+}
+
+public readonly record struct SolidInfo(int Solids, double Volume, double Area, V3 Min, V3 Max)
+{
+    public bool IsEmpty => Solids <= 0 || Math.Abs(Volume) < 1e-9;
+}
+
+public enum BoolOp { Union = 0, Subtract = 1, Intersect = 2 }
+
+/// <summary>
+/// An immutable B-rep solid owned by OpenCASCADE, with a lazily built display mesh in the Rust
+/// engine. Both are freed when the object is collected.
+/// </summary>
 public sealed unsafe class Solid
 {
-    public uint Handle { get; }
-    private readonly long _pressure;
+    public uint Shape { get; }
+    private uint _mesh;
+    private SolidInfo? _info;
+    private List<V3[]>? _edges;
 
-    private Solid(uint h)
+    /// <summary>Display deflection relative to the bounding-box diagonal.</summary>
+    public const double Deflection = 0.0012;
+
+    private Solid(uint shape)
     {
-        Handle = h;
-        double* o = stackalloc double[8];
-        int tris = Native.osc_info(h, o);
-        _pressure = Math.Max(1, tris) * 200L;
-        GC.AddMemoryPressure(_pressure);
+        Shape = shape;
+        GC.AddMemoryPressure(64_000);
     }
 
     ~Solid()
     {
-        Native.osc_free(Handle);
-        GC.RemoveMemoryPressure(_pressure);
+        Occt.ok_free(Shape);
+        if (_mesh != 0) Native.osc_free(_mesh);
+        GC.RemoveMemoryPressure(64_000);
     }
 
-    private static Solid? Wrap(uint h) => h == 0 ? null : new Solid(h);
+    private static Solid Wrap(uint h) => h == 0 ? throw new InvalidOperationException(Occt.LastError()) : new Solid(h);
 
-    public static Solid Box(V3 a, V3 b) => Wrap(Native.osc_box(a.X, a.Y, a.Z, b.X, b.Y, b.Z))!;
-    public static Solid Cylinder(V3 c, double r, double h) => Wrap(Native.osc_cylinder(c.X, c.Y, c.Z, r, h))!;
-    public static Solid Cone(V3 c, double r1, double r2, double h) => Wrap(Native.osc_cone(c.X, c.Y, c.Z, r1, r2, h))!;
-    public static Solid Sphere(V3 c, double r) => Wrap(Native.osc_sphere(c.X, c.Y, c.Z, r))!;
-    public static Solid Torus(V3 c, double major, double minor) => Wrap(Native.osc_torus(c.X, c.Y, c.Z, major, minor))!;
-
-    private static (double[] pts, int[] counts) Flatten(IReadOnlyList<IReadOnlyList<P2>> loops)
+    /// <summary>Rust mesh used for display, picking and mesh export.</summary>
+    public uint Handle
     {
-        var pts = new List<double>();
-        var counts = new int[loops.Count];
-        for (int i = 0; i < loops.Count; i++)
+        get
         {
-            counts[i] = loops[i].Count;
-            foreach (var p in loops[i]) { pts.Add(p.X); pts.Add(p.Y); }
+            if (_mesh != 0) return _mesh;
+            lock (this)
+            {
+                if (_mesh != 0) return _mesh;
+                int n = Occt.ok_mesh(Shape, Deflection);
+                if (n <= 0) return _mesh = Native.osc_mesh(null, null, 0);
+                var xyz = new double[n * 9];
+                var faces = new uint[n];
+                fixed (double* px = xyz)
+                fixed (uint* pf = faces)
+                {
+                    Occt.ok_mesh_copy(px, pf);
+                    _mesh = Native.osc_mesh(px, pf, n);
+                }
+                return _mesh;
+            }
         }
-        return (pts.ToArray(), counts);
     }
 
-    public static Solid? Extrude(PlaneFrame f, IReadOnlyList<IReadOnlyList<P2>> loops, double h0, double h1)
+    public static Solid Box(V3 a, V3 b) { Occt.Init(); return Wrap(Occt.ok_box(a.X, a.Y, a.Z, b.X, b.Y, b.Z)); }
+    public static Solid Cylinder(V3 c, double r, double h) { Occt.Init(); return Wrap(Occt.ok_cylinder(c.X, c.Y, c.Z, r, h)); }
+    public static Solid Cone(V3 c, double r1, double r2, double h) { Occt.Init(); return Wrap(Occt.ok_cone(c.X, c.Y, c.Z, r1, r2, h)); }
+    public static Solid Sphere(V3 c, double r) { Occt.Init(); return Wrap(Occt.ok_sphere(c.X, c.Y, c.Z, r)); }
+    public static Solid Torus(V3 c, double major, double minor) { Occt.Init(); return Wrap(Occt.ok_torus(c.X, c.Y, c.Z, major, minor)); }
+
+    /// <summary>Planar face of a profile region (outer loop first, then holes); freed by the caller.</summary>
+    private static uint Face(PlaneFrame f, IReadOnlyList<Profile> region)
     {
-        var (pts, counts) = Flatten(loops);
+        Occt.Init();
+        var kinds = new List<int>();
+        var data = new List<double>();
+        var counts = new int[region.Count];
+        for (int i = 0; i < region.Count; i++)
+        {
+            counts[i] = region[i].Pieces.Count;
+            foreach (var p in region[i].Pieces)
+            {
+                kinds.Add(p.Kind);
+                data.AddRange(p.P);
+            }
+        }
         var fr = f.ToArray();
-        fixed (double* pf = fr, pp = pts)
-        fixed (int* pc = counts)
-            return Wrap(Native.osc_extrude(pf, pp, pc, counts.Length, h0, h1));
+        var k = kinds.ToArray();
+        var d = data.ToArray();
+        fixed (double* pf = fr, pd = d)
+        fixed (int* pk = k, pc = counts)
+        {
+            uint face = Occt.ok_profile_face(pf, pk, pd, pc, counts.Length);
+            if (face == 0) throw new InvalidOperationException(Occt.LastError());
+            return face;
+        }
     }
 
-    public static Solid? Revolve(PlaneFrame f, IReadOnlyList<IReadOnlyList<P2>> loops, P2 axisPoint, P2 axisDir, double angle)
+    public static Solid Extrude(PlaneFrame f, IReadOnlyList<Profile> region, double h0, double h1)
     {
-        var (pts, counts) = Flatten(loops);
-        var fr = f.ToArray();
-        fixed (double* pf = fr, pp = pts)
-        fixed (int* pc = counts)
-            return Wrap(Native.osc_revolve(pf, pp, pc, counts.Length, axisPoint.X, axisPoint.Y, axisDir.X, axisDir.Y, angle));
+        uint face = Face(f, region);
+        try { return Wrap(Occt.ok_prism(face, f.N.X, f.N.Y, f.N.Z, h0, h1)); }
+        finally { Occt.ok_free(face); }
     }
 
-    public Solid Boolean(Solid tool, BoolOp op) => Wrap(Native.osc_boolean(Handle, tool.Handle, (uint)op))!;
+    public static Solid Revolve(PlaneFrame f, IReadOnlyList<Profile> region, P2 axisPoint, P2 axisDir, double angle)
+    {
+        uint face = Face(f, region);
+        var o = f.At(axisPoint);
+        var d = (f.U * axisDir.X + f.V * axisDir.Y).Norm();
+        try { return Wrap(Occt.ok_revol(face, o.X, o.Y, o.Z, d.X, d.Y, d.Z, angle)); }
+        finally { Occt.ok_free(face); }
+    }
+
+    public Solid Boolean(Solid tool, BoolOp op) => Wrap(Occt.ok_bool(Shape, tool.Shape, (int)op));
 
     public Solid Transform(Affine m)
     {
         var a = m.ToArray();
-        fixed (double* p = a) return Wrap(Native.osc_transform(Handle, p))!;
+        fixed (double* p = a) return Wrap(Occt.ok_transform(Shape, p));
     }
+
+    private Solid PointOp(IReadOnlyList<V3> pts, Func<IntPtr, int, uint> op)
+    {
+        var flat = pts.SelectMany(p => new[] { p.X, p.Y, p.Z }).ToArray();
+        fixed (double* pf = flat) return Wrap(op((IntPtr)pf, pts.Count));
+    }
+
+    /// <summary>Fillet the edges nearest to the points (every edge when the list is empty).</summary>
+    public Solid Fillet(IReadOnlyList<V3> edgePoints, double radius) => PointOp(edgePoints, (p, n) => Occt.ok_blend(Shape, 0, (double*)p, n, radius));
+
+    public Solid Chamfer(IReadOnlyList<V3> edgePoints, double distance) => PointOp(edgePoints, (p, n) => Occt.ok_blend(Shape, 1, (double*)p, n, distance));
+
+    /// <summary>Hollow out, removing the faces nearest to the points; negative thickness grows inward.</summary>
+    public Solid Shell(IReadOnlyList<V3> facePoints, double thickness) => PointOp(facePoints, (p, n) => Occt.ok_shell(Shape, (double*)p, n, thickness));
 
     public SolidInfo Info
     {
         get
         {
+            if (_info is { } i) return i;
             double* o = stackalloc double[8];
-            int n = Native.osc_info(Handle, o);
-            return new SolidInfo(n, o[0], o[1], new V3(o[2], o[3], o[4]), new V3(o[5], o[6], o[7]));
+            int n = Occt.ok_info(Shape, o);
+            var info = new SolidInfo(n, o[0], o[1], new V3(o[2], o[3], o[4]), new V3(o[5], o[6], o[7]));
+            _info = info;
+            return info;
         }
     }
 
-    public static Solid? Import(string path)
+    /// <summary>B-rep edges as polylines (for edge picking and highlighting).</summary>
+    public List<V3[]> Edges
     {
-        uint fmt = path.EndsWith(".obj", StringComparison.OrdinalIgnoreCase) ? 1u : 0u;
-        var p = Native.Utf8Z(path);
-        fixed (byte* pp = p) return Wrap(Native.osc_import(pp, fmt));
+        get
+        {
+            if (_edges != null) return _edges;
+            lock (this)
+            {
+                var list = new List<V3[]>();
+                int n = Occt.ok_edges(Shape, Deflection);
+                if (n > 0)
+                {
+                    var xyz = new double[Occt.ok_edges_points() * 3];
+                    var counts = new int[n];
+                    fixed (double* px = xyz)
+                    fixed (int* pc = counts)
+                        Occt.ok_edges_copy(px, pc);
+                    int o = 0;
+                    foreach (var c in counts)
+                    {
+                        var pts = new V3[c];
+                        for (int i = 0; i < c; i++, o++) pts[i] = new V3(xyz[o * 3], xyz[o * 3 + 1], xyz[o * 3 + 2]);
+                        list.Add(pts);
+                    }
+                }
+                return _edges = list;
+            }
+        }
     }
 
-    /// <summary>format: 0 STL, 1 OBJ, 2 USDA.</summary>
+    /// <summary>Sketch frame of the planar face at the point, or null when the face is curved.</summary>
+    public PlaneFrame? FaceFrame(V3 p)
+    {
+        double* o = stackalloc double[12];
+        if (Occt.ok_face_frame(Shape, p.X, p.Y, p.Z, o) == 0) return null;
+        return new PlaneFrame(new V3(o[0], o[1], o[2]), new V3(o[3], o[4], o[5]), new V3(o[6], o[7], o[8]), new V3(o[9], o[10], o[11]));
+    }
+
+    /// <summary>Solids from a STEP/IGES/STL/OBJ file.</summary>
+    public static List<Solid> Import(string path)
+    {
+        Occt.Init();
+        var ext = Path.GetExtension(path).ToLowerInvariant();
+        var p = Native.Utf8Z(path);
+        uint whole;
+        if (ext is ".step" or ".stp" or ".iges" or ".igs")
+        {
+            fixed (byte* pp = p) whole = Occt.ok_read(pp, ext is ".step" or ".stp" ? 0 : 1);
+        }
+        else
+        {
+            uint mesh;
+            fixed (byte* pp = p) mesh = Native.osc_import(pp, ext == ".obj" ? 1u : 0u);
+            if (mesh == 0) throw new InvalidOperationException("STL/OBJ 파일을 읽을 수 없습니다.");
+            try
+            {
+                int n = Native.osc_tris(mesh, null);
+                var tris = new double[n * 9];
+                fixed (double* pt = tris)
+                {
+                    Native.osc_tris(mesh, pt);
+                    whole = Occt.ok_from_mesh(pt, n);
+                }
+            }
+            finally { Native.osc_free(mesh); }
+        }
+        if (whole == 0) throw new InvalidOperationException(Occt.LastError());
+        try
+        {
+            var handles = new uint[4096];
+            int count;
+            fixed (uint* ph = handles) count = Occt.ok_solids(whole, ph, handles.Length);
+            if (count <= 0) throw new InvalidOperationException("파일에 솔리드가 없습니다.");
+            return handles.Take(count).Select(h => new Solid(h)).ToList();
+        }
+        finally { Occt.ok_free(whole); }
+    }
+
+    /// <summary>format: 0 STL, 1 OBJ, 2 USDA, 3 STEP.</summary>
     public static bool Export(IReadOnlyList<(string name, Solid solid)> bodies, string path, uint format)
     {
+        var p = Native.Utf8Z(path);
+        if (format == 3)
+        {
+            var shapes = bodies.Select(b => b.solid.Shape).ToArray();
+            fixed (uint* ph = shapes)
+            fixed (byte* pp = p)
+                return Occt.ok_write_step(ph, shapes.Length, pp) == 1;
+        }
         var hs = bodies.Select(b => b.solid.Handle).ToArray();
         var names = Native.Utf8Z(string.Join("\n", bodies.Select(b => b.name.Replace('\n', ' '))));
-        var p = Native.Utf8Z(path);
         fixed (uint* ph = hs)
         fixed (byte* pn = names, pp = p)
             return Native.osc_export(ph, pn, hs.Length, pp, format) == 1;
