@@ -474,5 +474,177 @@ var usdText = File.ReadAllText(usdPhys);
 Check(usdText.Contains("PhysicsRevoluteJoint") && usdText.Contains("PhysicsRigidBodyAPI") && usdText.Contains("PhysicsFixedJoint") && usdText.Contains("physics:body0 = </World/"),
     "USD has rigid bodies, the revolute joint and the grounded base for Isaac Sim");
 
+// ================= loft, sweep, surfaces, sheet metal, plastic =================
+async Task Fresh(string tag)
+{
+    w.SaveTo(Path.Combine(outDir, $"before_{tag}.osc"));
+    await w.NewDesign();
+    Pump();
+}
+void Iso()
+{
+    w.View.SetView(-55, 30);
+    w.FitAll();
+    Pump();
+}
+void SketchOn(string plane, double offset = 0)
+{
+    Click(Tip("스케치 작성"));
+    Click(Text(plane));
+    if (offset != 0) SetField("평면 간격띄우기", offset.ToString());
+    w.View.Cam.Target = w.Sketch!.Draft.Frame.At(new P2(0, 0));
+    w.View.Cam.Distance = 200;
+    w.View.Invalidate3D();
+    Pump();
+}
+void Shape(string tool, params (double x, double y)[] pts)
+{
+    w.RunCommand(tool);
+    Pump();
+    foreach (var (x, y) in pts) Click(SketchPt(x, y));
+    Key(Avalonia.Input.Key.Escape);
+}
+void Finish() => Click(Tip("스케치 마침"));
+SketchFeature LastSketch() => w.Document.Features.OfType<SketchFeature>().Last();
+void ClickProfile(SketchFeature sk, double x, double y) => Click(World(sk.Frame.At(new P2(x, y))));
+void Ok() { w.RefreshPreview(); Click(Text("확인")); }
+
+// loft square -> circle
+await Fresh("loft");
+SketchOn("XY");
+Shape("crect", (0, 0), (20, 20));
+Finish();
+var la = LastSketch();
+SketchOn("XY", 30);
+Shape("circle", (0, 0), (10, 0));
+Finish();
+var lb = LastSketch();
+Iso();
+w.RunCommand("loft");
+Pump();
+ClickProfile(la, 15, -15);
+ClickProfile(lb, 0, 0);
+Ok();
+var loftI = w.State.Bodies.Last().Solid.Info;
+Check(w.State.Bodies.Count == 1 && loftI.Volume > Math.PI * 100 * 30 && loftI.Volume < 1600 * 30 && Math.Abs(loftI.Max.Z - 30) < 1e-6, $"loft from a square to a circle ({loftI.Volume:0} mm³)");
+Shot("loft");
+
+// sweep a circle along a line
+await Fresh("sweep");
+SketchOn("XZ");
+Shape("circle", (0, 0), (3, 0));
+Finish();
+var sp = LastSketch();
+SketchOn("XY");
+Shape("line", (0, 0), (0, 50));
+Finish();
+var pathSk = LastSketch();
+Iso();
+w.RunCommand("sweep");
+Pump();
+ClickProfile(sp, 0, 0);
+Check(w.Command?.SelectKind == "path", "sweep asks for the path after the profile");
+Click(World(pathSk.Frame.At(new P2(0, 30))));
+Ok();
+Check(Near(w.State.Bodies.Last().Solid.Info.Volume, Math.PI * 9 * 50, 0.005), $"sweep of r=3 along 50 mm ({w.State.Bodies.Last().Solid.Info.Volume:0.0} ≈ {Math.PI * 450:0.0})");
+
+// surface extrude, thicken, patch
+await Fresh("surface");
+SketchOn("XY");
+Shape("line", (0, 0), (30, 0));
+Shape("circle", (0, 20), (5, 20));
+Finish();
+var ss = LastSketch();
+Iso();
+w.RunCommand("surfextrude");
+Pump();
+Click(World(ss.Frame.At(new P2(15, 0))));
+SetField("거리", "20");
+Ok();
+var surf = w.State.Bodies.Last().Solid.Info;
+Check(surf.Solids == 0 && Near(surf.Area, 600, 1e-6), $"surface extrude makes a 600 mm² surface body (area {surf.Area:0.0})");
+Click(Text(w.BodyName(w.State.Bodies.Last().Id)));
+w.RunCommand("thicken");
+Pump();
+SetField("두께", "2");
+Ok();
+Check(Near(w.State.Bodies.Last().Solid.Info.Volume, 1200, 0.01), $"thicken 2 mm turns it into a 1200 mm³ solid ({w.State.Bodies.Last().Solid.Info.Volume:0.0})");
+w.RunCommand("patch");
+Pump();
+ss = w.Document.Features.OfType<SketchFeature>().Last();
+Click(World(ss.Frame.At(new P2(5, 20))));
+Ok();
+Check(Near(w.State.Bodies.Last().Solid.Info.Area, Math.PI * 25, 1e-4), "patch fills the circle with a flat surface");
+Shot("surfaces");
+
+// press/pull
+await Fresh("presspull");
+Box(20, 20, 20, 0);
+Iso();
+w.RunCommand("presspull");
+Pump();
+Click(World(new V3(3, 3, 20)));
+SetField("거리", "5");
+Ok();
+Check(Near(Volume(), 20 * 20 * 25, 1e-6), "press/pull raises the top face by 5 mm");
+
+// sheet metal: base flange + edge flange
+await Fresh("sheet");
+SketchOn("XY");
+Shape("crect", (0, 0), (20, 15));
+Finish();
+var sm = LastSketch();
+Iso();
+w.RunCommand("flange");
+Pump();
+ClickProfile(sm, 5, 5);
+Ok();
+Check(Near(Volume(), 40 * 30 * 1, 1e-6), "base flange is the profile at sheet thickness (1 mm)");
+w.RunCommand("edgeflange");
+Pump();
+Click(World(new V3(0, -15, 1)));
+SetField("높이", "10");
+Ok();
+double flangeAdd = Math.PI / 4 * (4 - 1) * 40 + 1 * 9 * 40;
+Check(Near(Volume() - 1200, flangeAdd, 0.01), $"edge flange adds the bend and wall ({Volume() - 1200:0.0} ≈ {flangeAdd:0.0} mm³)");
+Iso();
+Shot("sheet_metal");
+
+// plastic: rib and boss
+await Fresh("plastic");
+Box(40, 40, 5, 0);
+SketchOn("XZ");
+Shape("line", (-15, 25), (15, 25));
+Finish();
+var rs = LastSketch();
+Iso();
+w.RunCommand("rib");
+Pump();
+Click(World(rs.Frame.At(new P2(0, 25))));
+SetField("두께", "2");
+SetField("깊이", "20");
+Ok();
+Check(Near(Volume(), 8000 + 30 * 20 * 2, 1e-4), $"rib adds a 30×20×2 wall ({Volume():0})");
+w.RunCommand("boss");
+Pump();
+Click(World(new V3(12, -12, 5)));
+SetField("높이", "10");
+Ok();
+double bossAdd = Math.PI * 16 * 10 - Math.PI * 2.25 * 15;
+Check(Near(Volume() - 9200, bossAdd, 0.01), $"boss with a pilot hole ({Volume() - 9200:0.0} ≈ {bossAdd:0.0} mm³)");
+Iso();
+Shot("plastic");
+
+// section analysis (display only)
+w.RunCommand("section");
+Pump();
+SetCombo("평면", 2);
+Pump();
+double shown = w.View.Items.Sum(i => i.Solid.Info.Volume);
+Check(shown < Volume() * 0.8 && shown > 0, "section analysis shows only one side of the cut");
+Shot("section");
+Click(Text("취소"));
+Check(Math.Abs(w.View.Items.Sum(i => i.Solid.Info.Volume) - Volume()) < 1e-6, "cancelling turns the section off");
+
 Console.WriteLine(failures.Count == 0 ? "ALL PASSED" : $"{failures.Count} FAILED");
 return failures.Count == 0 ? 0 : 1;

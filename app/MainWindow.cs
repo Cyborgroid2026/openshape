@@ -59,6 +59,7 @@ public sealed partial class MainWindow : Window
             VerticalAlignment = VerticalAlignment.Top,
             Margin = new Thickness(0, 12, 0, 0),
             IsVisible = false,
+            IsHitTestVisible = false,
             Child = _prompt,
         };
 
@@ -150,7 +151,7 @@ public sealed partial class MainWindow : Window
             if (_doc.HiddenBodies.Contains(b.Id)) continue;
             var col = _doc.BodyColors.TryGetValue(b.Id, out var hex) ? Color.Parse(hex) : DefaultBody;
             uint flags = _selBodies.Contains(b.Id) && _sk == null ? Viewport.Selected : 0;
-            items.Add(new RenderItem(b.Solid, col, flags));
+            items.Add(new RenderItem(_section != null ? SectionOf(b.Solid) : b.Solid, col, flags));
             _itemBodies.Add(b.Id);
         }
         View.Items = items;
@@ -341,8 +342,8 @@ public sealed partial class MainWindow : Window
         _tabsRow.Children.Clear();
         var tabs = new List<(string id, string label, bool enabled)>
         {
-            ("solid", "솔리드", true), ("surface", "곡면", false), ("mesh", "메쉬", false), ("sheet", "판금", false),
-            ("plastic", "플라스틱", false), ("manage", "관리", false), ("utilities", "유틸리티", true),
+            ("solid", "솔리드", true), ("surface", "곡면", true), ("mesh", "메쉬", true), ("sheet", "판금", true),
+            ("plastic", "플라스틱", true), ("manage", "관리", false), ("utilities", "유틸리티", true),
         };
         if (_sk != null) tabs.Add(("sketch", "스케치", true));
         foreach (var (id, label, enabled) in tabs)
@@ -396,6 +397,16 @@ public sealed partial class MainWindow : Window
         ["chamfer"] = "모따기",
         ["shell"] = "쉘",
         ["presspull"] = "누르기/당기기",
+        ["loft"] = "로프트",
+        ["sweep"] = "스윕",
+        ["surfextrude"] = "돌출(곡면)",
+        ["patch"] = "패치",
+        ["thicken"] = "두껍게",
+        ["flange"] = "플랜지",
+        ["edgeflange"] = "모서리 플랜지",
+        ["sheetrule"] = "판금 규칙",
+        ["rib"] = "리브",
+        ["boss"] = "보스",
         ["select"] = "선택",
         ["export"] = "내보내기",
         ["parameters"] = "매개변수 변경",
@@ -419,7 +430,7 @@ public sealed partial class MainWindow : Window
         ["finish"] = "스케치 마침",
     };
 
-    private static readonly HashSet<string> Unsupported = new() { "section", "parameters", "trim", "presspull" };
+    private static readonly HashSet<string> Unsupported = new() { "parameters", "trim" };
 
     /// <summary>One toolbar group: a row of big icons with the group name (and ▾ menu) underneath.</summary>
     private Control Group(string title, string[] shown, string[] menu)
@@ -495,6 +506,46 @@ public sealed partial class MainWindow : Window
                 foreach (var b in c.Children.OfType<StackPanel>().SelectMany(s => s.Children.OfType<FlatButton>()))
                     b.IsSelected = false;
         }
+        else if (_tab == "surface")
+        {
+            row.Children.Add(Group("작성", new[] { "sketch", "surfextrude", "loft", "sweep", "patch" }, new[] { "sketch", "-", "surfextrude", "loft", "sweep", "patch" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("수정", new[] { "thicken", "move", "delete" }, new[] { "thicken", "-", "move", "scale", "delete" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("검사", new[] { "measure", "section" }, new[] { "measure", "section" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("선택", new[] { "select" }, new[] { "select" }));
+        }
+        else if (_tab == "sheet")
+        {
+            row.Children.Add(Group("작성", new[] { "sketch", "flange", "edgeflange" }, new[] { "sketch", "-", "flange", "edgeflange" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("수정", new[] { "sheetrule", "presspull", "move" }, new[] { "sheetrule", "-", "presspull", "fillet", "move", "delete" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("검사", new[] { "measure" }, new[] { "measure", "section" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("선택", new[] { "select" }, new[] { "select" }));
+        }
+        else if (_tab == "plastic")
+        {
+            row.Children.Add(Group("작성", new[] { "sketch", "extrude", "rib", "boss" }, new[] { "sketch", "-", "extrude", "rib", "boss" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("수정", new[] { "fillet", "shell", "presspull" }, new[] { "fillet", "chamfer", "shell", "presspull" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("검사", new[] { "measure", "section" }, new[] { "measure", "section" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("선택", new[] { "select" }, new[] { "select" }));
+        }
+        else if (_tab == "mesh")
+        {
+            row.Children.Add(Group("작성", new[] { "insertmesh" }, new[] { "insertmesh", "insertcad" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("수정", new[] { "move", "scale", "delete" }, new[] { "move", "scale", "delete" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("검사", new[] { "measure", "section" }, new[] { "measure", "section" }));
+            row.Children.Add(Separator());
+            row.Children.Add(Group("내보내기", new[] { "export" }, new[] { "export" }));
+        }
         else if (_tab == "utilities")
         {
             row.Children.Add(Group("만들기", new[] { "export" }, new[] { "export" }));
@@ -506,7 +557,7 @@ public sealed partial class MainWindow : Window
         else
         {
             row.Children.Add(Group("작성", new[] { "sketch", "extrude", "revolve", "box", "rectpattern", "mirror" },
-                new[] { "newcomponent", "sketch", "-", "extrude", "revolve", "-", "box", "cylinder", "sphere", "torus", "-", "rectpattern", "circpattern", "mirror" }));
+                new[] { "newcomponent", "sketch", "-", "extrude", "revolve", "loft", "sweep", "-", "box", "cylinder", "sphere", "torus", "-", "rectpattern", "circpattern", "mirror", "-", "rib", "boss" }));
             row.Children.Add(Separator());
             row.Children.Add(Group("수정", new[] { "presspull", "fillet", "chamfer", "shell", "combine", "move" },
                 new[] { "presspull", "fillet", "chamfer", "shell", "-", "combine", "scale", "-", "appearance", "-", "delete", "move" }));
@@ -1051,9 +1102,9 @@ public sealed partial class MainWindow : Window
     private void ShowAbout()
     {
         var panel = new CommandPanel("정보", null, () => CloseDialog(), null);
-        panel.AddText("OpenShape CAD 0.4.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
+        panel.AddText("OpenShape CAD 0.5.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
                       "Autodesk의 코드나 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다.\n\n" +
-                      "아직 지원하지 않는 기능: 누르기/당기기, 볼·핀-슬롯 조인트, 곡면·메쉬·판금 작업공간, 접선·대칭 구속, .f3d 직접 열기(클라우드 동기화의 STEP으로 열 수 있음)");
+                      "아직 지원하지 않는 기능: 관리(매개변수), 스케치 자르기, 볼·핀-슬롯 조인트, 접선·대칭 구속, 판금 펼치기, .f3d 직접 열기(클라우드 동기화의 STEP으로 열 수 있음)");
         ShowDialog(panel);
     }
 }

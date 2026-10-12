@@ -59,8 +59,27 @@ public sealed partial class MainWindow
     private IEnumerable<SketchFeature> ShownSketches()
     {
         var s = _cmd?.Base ?? State;
-        bool picking = _cmd?.SelectKind == "profiles";
+        bool picking = _cmd?.SelectKind is "profiles" or "chains" or "path";
         return (_cmd != null ? s : State).Sketches.Where(k => k.Visible || picking);
+    }
+
+    /// <summary>Sketch curve chain under the cursor (within 7 px).</summary>
+    private ChainRef? HitChain(Point screen)
+    {
+        ChainRef? best = null;
+        double bd = 7;
+        foreach (var sk in ShownSketches())
+        {
+            var chains = Profiles.Chains(sk);
+            foreach (var c in chains)
+                for (int k = 0; k + 1 < c.Points.Count; k++)
+                {
+                    if (ToScreen(sk.Frame, c.Points[k]) is not { } a || ToScreen(sk.Frame, c.Points[k + 1]) is not { } b) continue;
+                    double d = SegmentDistance(screen, a, b);
+                    if (d < bd) { bd = d; best = new ChainRef(sk.Id, c.Index); }
+                }
+        }
+        return best;
     }
 
     private (ProfileRef? r, double t) HitProfile(Point screen)
@@ -307,6 +326,17 @@ public sealed partial class MainWindow
             }
             if (pts.Count > 1) ctx.DrawGeometry(null, pen, new PolylineGeometry(pts, false));
         }
+        var chosen = _cmd?.Draft switch { SurfaceFeature sf => sf.Chains, RibFeature rb => rb.Chains, SweepFeature sw => sw.Path, _ => null };
+        if (chosen != null)
+            foreach (var cr in chosen)
+                if ((_cmd?.Base ?? State).Sketches.FirstOrDefault(k => k.Id == cr.Sketch) is { } sk && Profiles.Chains(sk) is var chs && cr.Chain < chs.Count)
+                    if (PolyGeometry(sk.Frame, chs[cr.Chain].Points, false) is { } g) ctx.DrawGeometry(null, new Pen(new SolidColorBrush(Color.FromRgb(6, 150, 215)), 3.5), g);
+        if (_cmd?.Draft is FlangeFeature { Edge: true } ef && ef.Pick.Length == 3 && EdgeAt(ef.Body, new V3(ef.Pick[0], ef.Pick[1], ef.Pick[2])) is { } fe) Line(fe, new Pen(new SolidColorBrush(Color.FromRgb(6, 150, 215)), 3.5));
+        if (_cmd?.Draft is PressPullFeature or BossFeature)
+        {
+            var pk = _cmd.Draft is PressPullFeature pp ? pp.Pick : ((BossFeature)_cmd.Draft).Pick;
+            if (pk.Length == 3 && View.Project(new V3(pk[0], pk[1], pk[2])) is { } sp) ctx.DrawEllipse(new SolidColorBrush(Color.FromRgb(6, 150, 215)), new Pen(Brushes.White, 1.5), sp, 5, 5);
+        }
         if (_cmd?.Draft is FilletFeature fl)
             foreach (var e in fl.Edges)
                 if (EdgeAt(fl.Body, new V3(e[0], e[1], e[2])) is { } line) Line(line, new Pen(new SolidColorBrush(Color.FromRgb(6, 150, 215)), 3.5));
@@ -334,7 +364,7 @@ public sealed partial class MainWindow
 
     private void OnCanvasHover(Point p)
     {
-        if (_cmd?.SelectKind == "edges")
+        if (_cmd?.SelectKind is "edges" or "edge1")
         {
             var h = HitEdge(p)?.edge;
             if (!ReferenceEquals(h, _hoverEdge)) { _hoverEdge = h; View.InvalidateVisual(); }
@@ -397,6 +427,23 @@ public sealed partial class MainWindow
         if (_cmd != null)
         {
             if (_cmd.SelectKind == "edges") { if (HitEdge(p) is { } he) CommandPickEdge(he.body, he.point); }
+            else if (_cmd.SelectKind is "chains" or "path")
+            {
+                if (HitChain(p) is { } ch) CommandPickChain(ch);
+            }
+            else if (_cmd.SelectKind == "edge1")
+            {
+                if (HitEdge(p) is { } he) CommandPickPoint(he.body, he.point);
+            }
+            else if (_cmd.SelectKind == "face1")
+            {
+                var (fi, ft, face) = View.PickFace(p);
+                if (fi >= 0 && face > 0 && fi < _itemBodies.Count)
+                {
+                    var (o, d) = View.Ray(p);
+                    CommandPickPoint(_itemBodies[fi], o + d * ft);
+                }
+            }
             else if (_cmd.SelectKind is "jointA" or "jointB")
             {
                 var (fi, ft, face) = View.PickFace(p);

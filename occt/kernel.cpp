@@ -23,6 +23,11 @@
 #include <BRepGProp.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepOffsetAPI_MakeThickSolid.hxx>
+#include <TopTools_IndexedDataMapOfShapeListOfShape.hxx>
+#include <BRepTools.hxx>
+#include <BRepFill_Filling.hxx>
+#include <BRepOffsetAPI_MakePipe.hxx>
+#include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
@@ -219,6 +224,216 @@ API uint32_t ok_torus(double x, double y, double z, double major, double minor) 
 }
 
 // ------------------------------------------------------------------- sketch profiles
+
+namespace {
+/// Wire from sketch curves (kinds/data as for ok_profile_face), advancing the cursors.
+bool build_wire(const Frame& f, const int32_t*& kinds, const double*& d, int count, TopoDS_Wire& out) {
+    BRepBuilderAPI_MakeWire mw;
+    for (int i = 0; i < count; i++, kinds++) {
+        switch (*kinds) {
+            case 0: {
+                gp_Pnt a = at(f, d[0], d[1]), b = at(f, d[2], d[3]);
+                d += 4;
+                if (a.Distance(b) > 1e-9) mw.Add(BRepBuilderAPI_MakeEdge(a, b).Edge());
+                break;
+            }
+            case 1: {
+                gp_Pnt a = at(f, d[0], d[1]), m = at(f, d[2], d[3]), b = at(f, d[4], d[5]);
+                d += 6;
+                GC_MakeArcOfCircle arc(a, m, b);
+                if (arc.IsDone()) mw.Add(BRepBuilderAPI_MakeEdge(arc.Value()).Edge());
+                else mw.Add(BRepBuilderAPI_MakeEdge(a, b).Edge());
+                break;
+            }
+            default: {
+                gp_Circ c(gp_Ax2(at(f, d[0], d[1]), f.n, f.u), d[2]);
+                d += 3;
+                mw.Add(BRepBuilderAPI_MakeEdge(c).Edge());
+                break;
+            }
+        }
+    }
+    if (!mw.IsDone()) return false;
+    out = mw.Wire();
+    return true;
+}
+}  // namespace
+
+/// Open or closed wire from sketch curves.
+API uint32_t ok_wire(const double* fr, const int32_t* kinds, const double* data, int count) {
+    return guarded([&]() -> uint32_t {
+        Frame f = frame(fr);
+        TopoDS_Wire w;
+        if (!build_wire(f, kinds, data, count, w)) {
+            g_error = "곡선이 이어져 있지 않습니다";
+            return 0;
+        }
+        return put(w);
+    });
+}
+
+/// Loft through closed profiles (faces or wires) in order.
+API uint32_t ok_loft(const uint32_t* hs, int n, int solid) {
+    return guarded([&]() -> uint32_t {
+        BRepOffsetAPI_ThruSections loft(solid != 0, false, 1e-6);
+        for (int i = 0; i < n; i++) {
+            TopoDS_Shape s;
+            if (!get(hs[i], s)) return 0;
+            if (s.ShapeType() == TopAbs_FACE) loft.AddWire(BRepTools::OuterWire(TopoDS::Face(s)));
+            else if (s.ShapeType() == TopAbs_WIRE) loft.AddWire(TopoDS::Wire(s));
+            else {
+                g_error = "로프트에는 닫힌 프로파일이 필요합니다";
+                return 0;
+            }
+        }
+        loft.CheckCompatibility(false);
+        loft.Build();
+        if (!loft.IsDone()) {
+            g_error = "로프트를 만들 수 없습니다";
+            return 0;
+        }
+        return put(loft.Shape());
+    });
+}
+
+/// Sweep a profile (face or wire) along a path wire.
+API uint32_t ok_sweep(uint32_t profile, uint32_t path) {
+    return guarded([&]() -> uint32_t {
+        TopoDS_Shape pr, pa;
+        if (!get(profile, pr) || !get(path, pa)) return 0;
+        BRepOffsetAPI_MakePipe pipe(TopoDS::Wire(pa), pr);
+        pipe.Build();
+        if (!pipe.IsDone()) {
+            g_error = "스윕을 만들 수 없습니다 (경로가 프로파일을 지나는지 확인하세요)";
+            return 0;
+        }
+        return put(pipe.Shape());
+    });
+}
+
+/// Planar face (or filled surface) bounded by a closed wire.
+API uint32_t ok_patch(uint32_t wire) {
+    return guarded([&]() -> uint32_t {
+        TopoDS_Shape w;
+        if (!get(wire, w)) return 0;
+        BRepBuilderAPI_MakeFace mf(TopoDS::Wire(w), true);
+        if (mf.IsDone()) return put(mf.Face());
+        BRepFill_Filling fill;
+        for (TopExp_Explorer e(w, TopAbs_EDGE); e.More(); e.Next()) fill.Add(TopoDS::Edge(e.Current()), GeomAbs_C0);
+        fill.Build();
+        if (!fill.IsDone()) {
+            g_error = "패치를 만들 수 없습니다";
+            return 0;
+        }
+        return put(fill.Face());
+    });
+}
+
+/// Thicken a surface (or offset a solid) into a solid.
+API uint32_t ok_thicken(uint32_t h, double t) {
+    return guarded([&]() -> uint32_t {
+        TopoDS_Shape s;
+        if (!get(h, s)) return 0;
+        BRepOffsetAPI_MakeThickSolid th;
+        th.MakeThickSolidBySimple(s, t);
+        th.Build();
+        if (!th.IsDone()) {
+            g_error = "두껍게 만들 수 없습니다";
+            return 0;
+        }
+        TopoDS_Shape r = th.Shape();
+        GProp_GProps g;
+        BRepGProp::VolumeProperties(r, g);
+        if (g.Mass() < 0) r.Reverse();   // offsetting a surface can leave the solid inside out
+        return put(r);
+    });
+}
+
+/// Press/pull: extrude the planar face nearest to the point along its normal by d (join if d > 0, cut if d < 0).
+API uint32_t ok_press_pull(uint32_t h, double x, double y, double z, double d) {
+    return guarded([&]() -> uint32_t {
+        TopoDS_Shape s;
+        if (!get(h, s)) return 0;
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(s, TopAbs_FACE, faces);
+        int f = nearest(faces, gp_Pnt(x, y, z), 0.5 + 1e-3 * diag(s));
+        if (f == 0) {
+            g_error = "면을 찾을 수 없습니다";
+            return 0;
+        }
+        const TopoDS_Face& face = TopoDS::Face(faces(f));
+        BRepAdaptor_Surface surf(face, false);
+        if (surf.GetType() != GeomAbs_Plane) {
+            g_error = "평면인 면만 누르기/당기기 할 수 있습니다";
+            return 0;
+        }
+        gp_Dir n = surf.Plane().Axis().Direction();
+        if (face.Orientation() == TopAbs_REVERSED) n.Reverse();
+        TopoDS_Shape tool = BRepPrimAPI_MakePrism(face, gp_Vec(n) * d).Shape();
+        TopoDS_Shape r;
+        if (d >= 0) {
+            BRepAlgoAPI_Fuse op(s, tool);
+            op.SimplifyResult();
+            r = op.Shape();
+        } else {
+            BRepAlgoAPI_Cut op(s, tool);
+            op.SimplifyResult();
+            r = op.Shape();
+        }
+        return put(r);
+    });
+}
+
+/// Edge flange frame: for the straight edge nearest to the point, writes origin (edge start),
+/// outward direction (in the face plane, away from the face), face normal, edge direction, and the edge length.
+API int ok_edge_flange_frame(uint32_t h, double x, double y, double z, double* out) {
+    TopoDS_Shape s;
+    if (!get(h, s)) return 0;
+    try {
+        TopTools_IndexedMapOfShape edges;
+        TopExp::MapShapes(s, TopAbs_EDGE, edges);
+        gp_Pnt pick(x, y, z);
+        int e = nearest(edges, pick, 0.5 + 1e-3 * diag(s));
+        if (e == 0) return 0;
+        const TopoDS_Edge& edge = TopoDS::Edge(edges(e));
+        BRepAdaptor_Curve c(edge);
+        if (c.GetType() != GeomAbs_Line) {
+            g_error = "직선 모서리를 선택하세요";
+            return 0;
+        }
+        gp_Pnt a = c.Value(c.FirstParameter()), b = c.Value(c.LastParameter());
+        gp_Dir dir(gp_Vec(a, b));
+        // the planar face on this edge whose normal points most "up" is the sheet's top face
+        TopTools_IndexedDataMapOfShapeListOfShape ef;
+        TopExp::MapShapesAndAncestors(s, TopAbs_EDGE, TopAbs_FACE, ef);
+        const TopTools_ListOfShape& fl = ef.FindFromKey(edge);
+        gp_Dir best_n;
+        gp_Pnt best_c;
+        double best_area = -1;
+        for (TopTools_ListIteratorOfListOfShape it(fl); it.More(); it.Next()) {
+            const TopoDS_Face& face = TopoDS::Face(it.Value());
+            BRepAdaptor_Surface surf(face, false);
+            if (surf.GetType() != GeomAbs_Plane) continue;
+            GProp_GProps g;
+            BRepGProp::SurfaceProperties(face, g);
+            if (g.Mass() > best_area) {
+                best_area = g.Mass();
+                best_n = surf.Plane().Axis().Direction();
+                if (face.Orientation() == TopAbs_REVERSED) best_n.Reverse();
+                best_c = g.CentreOfMass();
+            }
+        }
+        if (best_area < 0) return 0;
+        gp_Dir out_dir = best_n.Crossed(dir);
+        gp_Vec toEdge(best_c, a);
+        if (toEdge.Dot(gp_Vec(out_dir)) < 0) out_dir.Reverse();
+        double r[13] = {a.X(), a.Y(), a.Z(), out_dir.X(), out_dir.Y(), out_dir.Z(), best_n.X(), best_n.Y(), best_n.Z(), dir.X(), dir.Y(), dir.Z(), a.Distance(b)};
+        std::memcpy(out, r, sizeof r);
+        return 1;
+    } catch (...) {
+        return 0;
+    }
+}
 
 /// Planar face from loops of sketch curves (first loop outer, the rest holes).
 /// kinds: 0 line (x1 y1 x2 y2), 1 three-point arc (x1 y1 xm ym x2 y2), 2 circle (cx cy r).

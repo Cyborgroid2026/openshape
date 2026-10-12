@@ -49,6 +49,13 @@ internal static unsafe class Occt
     [DllImport(Lib)] public static extern void ok_edges_copy(double* xyz, int* counts);
     [DllImport(Lib)] public static extern int ok_face_frame(uint h, double x, double y, double z, double* out12);
     [DllImport(Lib)] public static extern int ok_joint_frame(uint h, double x, double y, double z, double* out6);
+    [DllImport(Lib)] public static extern uint ok_wire(double* frame, int* kinds, double* data, int count);
+    [DllImport(Lib)] public static extern uint ok_loft(uint* hs, int n, int solid);
+    [DllImport(Lib)] public static extern uint ok_sweep(uint profile, uint path);
+    [DllImport(Lib)] public static extern uint ok_patch(uint wire);
+    [DllImport(Lib)] public static extern uint ok_thicken(uint h, double t);
+    [DllImport(Lib)] public static extern uint ok_press_pull(uint h, double x, double y, double z, double d);
+    [DllImport(Lib)] public static extern int ok_edge_flange_frame(uint h, double x, double y, double z, double* out13);
     [DllImport(Lib)] public static extern uint ok_read(byte* path, int kind);
     [DllImport(Lib)] public static extern int ok_solids(uint h, uint* outHandles, int max);
     [DllImport(Lib)] public static extern int ok_write_step(uint* hs, int n, byte* path);
@@ -73,7 +80,8 @@ internal static unsafe class Occt
 
 public readonly record struct SolidInfo(int Solids, double Volume, double Area, V3 Min, V3 Max)
 {
-    public bool IsEmpty => Solids <= 0 || Math.Abs(Volume) < 1e-9;
+    /// <summary>Nothing left: no solid volume and (for surface bodies) no area.</summary>
+    public bool IsEmpty => Solids > 0 ? Math.Abs(Volume) < 1e-9 : Area < 1e-9;
 }
 
 public enum BoolOp { Union = 0, Subtract = 1, Intersect = 2 }
@@ -163,6 +171,71 @@ public sealed unsafe class Solid
             if (face == 0) throw new InvalidOperationException(Occt.LastError());
             return face;
         }
+    }
+
+    /// <summary>Wire (open or closed) through sketch pieces; freed by the caller.</summary>
+    private static uint WireOf(PlaneFrame f, IReadOnlyList<Piece> pieces)
+    {
+        Occt.Init();
+        var k = pieces.Select(p => p.Kind).ToArray();
+        var d = pieces.SelectMany(p => p.P).ToArray();
+        var fr = f.ToArray();
+        fixed (double* pf = fr, pd = d)
+        fixed (int* pk = k)
+        {
+            uint w = Occt.ok_wire(pf, pk, pd, k.Length);
+            if (w == 0) throw new InvalidOperationException(Occt.LastError());
+            return w;
+        }
+    }
+
+    /// <summary>Solid loft through closed profile regions (outer loops), in order.</summary>
+    public static Solid Loft(IReadOnlyList<(PlaneFrame frame, IReadOnlyList<Profile> region)> sections)
+    {
+        var faces = sections.Select(s => Face(s.frame, s.region)).ToArray();
+        try
+        {
+            fixed (uint* pf = faces) return Wrap(Occt.ok_loft(pf, faces.Length, 1));
+        }
+        finally
+        {
+            foreach (var f in faces) Occt.ok_free(f);
+        }
+    }
+
+    public static Solid Sweep(PlaneFrame pf, IReadOnlyList<Profile> region, PlaneFrame pathFrame, IReadOnlyList<Piece> path)
+    {
+        uint face = Face(pf, region);
+        uint wire = WireOf(pathFrame, path);
+        try { return Wrap(Occt.ok_sweep(face, wire)); }
+        finally { Occt.ok_free(face); Occt.ok_free(wire); }
+    }
+
+    /// <summary>Surface (not solid) extruded from sketch curves.</summary>
+    public static Solid SurfaceExtrude(PlaneFrame f, IReadOnlyList<Piece> curves, double h0, double h1)
+    {
+        uint wire = WireOf(f, curves);
+        try { return Wrap(Occt.ok_prism(wire, f.N.X, f.N.Y, f.N.Z, h0, h1)); }
+        finally { Occt.ok_free(wire); }
+    }
+
+    public static Solid Patch(PlaneFrame f, IReadOnlyList<Piece> loop)
+    {
+        uint wire = WireOf(f, loop);
+        try { return Wrap(Occt.ok_patch(wire)); }
+        finally { Occt.ok_free(wire); }
+    }
+
+    public Solid Thicken(double t) => Wrap(Occt.ok_thicken(Shape, t));
+
+    public Solid PressPull(V3 p, double d) => Wrap(Occt.ok_press_pull(Shape, p.X, p.Y, p.Z, d));
+
+    /// <summary>Straight edge at p: start, outward (in the sheet), sheet normal, edge direction, length.</summary>
+    public (V3 o, V3 outward, V3 normal, V3 dir, double length)? EdgeFlangeFrame(V3 p)
+    {
+        double* r = stackalloc double[13];
+        if (Occt.ok_edge_flange_frame(Shape, p.X, p.Y, p.Z, r) == 0) return null;
+        return (new V3(r[0], r[1], r[2]), new V3(r[3], r[4], r[5]), new V3(r[6], r[7], r[8]), new V3(r[9], r[10], r[11]), r[12]);
     }
 
     public static Solid Extrude(PlaneFrame f, IReadOnlyList<Profile> region, double h0, double h1)

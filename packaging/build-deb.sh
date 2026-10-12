@@ -2,7 +2,7 @@
 # Build the Rust engine and the self-contained C# app, run the tests, then package a .deb.
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION=0.4.0
+VERSION=0.5.0
 ARCH=amd64
 PKG=openshape_${VERSION}_${ARCH}
 STAGE="$ROOT/build/$PKG"
@@ -69,7 +69,9 @@ Maintainer: a71143055 <a71143055@gmail.com>
 Description: Parametric 3D CAD for Ubuntu
  OpenShape CAD is a clean-room parametric modeller whose screen layout
  follows Autodesk Fusion (toolbar, browser, timeline, ViewCube, navigation
- bar): sketches (also on model faces), extrude, revolve, primitives,
+ bar): sketches (also on model faces), extrude, revolve, loft, sweep,
+ primitives, surfaces (extrude, patch, thicken), sheet metal flanges,
+ plastic ribs and bosses, press/pull, section analysis,
  booleans, fillet, chamfer, shell, sketch dimensions and constraints
  (SolveSpace solver), components and rigid/revolute/slider
  joints, move, mirror, patterns, STEP/IGES import,

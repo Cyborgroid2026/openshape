@@ -151,6 +151,39 @@ public sealed partial class MainWindow
             case "joint":
                 OpenCommand(new JointFeature { Name = _doc.NextName("joint") }, -1);
                 break;
+            case "loft":
+                OpenCommand(new LoftFeature { Name = _doc.NextName("loft"), Profiles = _selProfiles.ToList(), Operation = _state.Bodies.Count > 0 ? BodyOp.Join : BodyOp.NewBody }, -1);
+                break;
+            case "sweep":
+                OpenCommand(new SweepFeature { Name = _doc.NextName("sweep"), Profiles = _selProfiles.Take(1).ToList(), Operation = _state.Bodies.Count > 0 ? BodyOp.Join : BodyOp.NewBody }, -1);
+                break;
+            case "surfextrude" or "patch":
+                OpenCommand(new SurfaceFeature { Name = _doc.NextName(id), Patch = id == "patch" }, -1);
+                break;
+            case "thicken":
+                OpenCommand(new ThickenFeature { Name = _doc.NextName("thicken"), Bodies = _selBodies.ToList() }, -1);
+                break;
+            case "presspull":
+                OpenCommand(new PressPullFeature { Name = _doc.NextName("presspull") }, -1);
+                break;
+            case "flange":
+                OpenCommand(new FlangeFeature { Name = _doc.NextName("flange"), Profiles = _selProfiles.ToList(), Thickness = _doc.SheetThickness, BendRadius = _doc.SheetBendRadius }, -1);
+                break;
+            case "edgeflange":
+                OpenCommand(new FlangeFeature { Name = _doc.NextName("edgeflange"), Edge = true, Thickness = _doc.SheetThickness, BendRadius = _doc.SheetBendRadius }, -1);
+                break;
+            case "sheetrule":
+                ShowSheetRule();
+                break;
+            case "rib":
+                OpenCommand(new RibFeature { Name = _doc.NextName("rib") }, -1);
+                break;
+            case "boss":
+                OpenCommand(new BossFeature { Name = _doc.NextName("boss") }, -1);
+                break;
+            case "section":
+                ShowSection();
+                break;
             case "fillet" or "chamfer":
                 OpenCommand(new FilletFeature { Name = _doc.NextName(id), Chamfer = id == "chamfer", Size = id == "chamfer" ? 1 : 2 }, -1);
                 break;
@@ -202,6 +235,7 @@ public sealed partial class MainWindow
         MirrorFeature m => m.Bodies,
         PatternFeature p => p.Bodies,
         ScaleFeature s => s.Bodies,
+        ThickenFeature t => t.Bodies,
         DeleteFeature d => d.Bodies,
         _ => null,
     };
@@ -210,6 +244,9 @@ public sealed partial class MainWindow
     {
         ExtrudeFeature e => e.Profiles,
         RevolveFeature r => r.Profiles,
+        LoftFeature l => l.Profiles,
+        SweepFeature w => w.Profiles,
+        FlangeFeature { Edge: false } fl => fl.Profiles,
         _ => null,
     };
 
@@ -226,11 +263,17 @@ public sealed partial class MainWindow
             CombineFeature c => string.IsNullOrEmpty(c.Target) ? "target" : "tools",
             FilletFeature => "edges",
             JointFeature => "jointA",
+            LoftFeature => "profiles",
+            SweepFeature sw => sw.Profiles.Count == 0 ? "profiles" : "path",
+            SurfaceFeature or RibFeature => "chains",
+            PressPullFeature or BossFeature => "face1",
+            FlangeFeature { Edge: true } => "edge1",
+            FlangeFeature => "profiles",
             ShellFeature => "faces",
             PrimitiveFeature => "",
             _ => "bodies",
         };
-        if (ProfileList(draft) is { Count: > 0 } && draft is ExtrudeFeature or RevolveFeature) _cmd.SelectKind = "profiles";
+        if (ProfileList(draft) is { Count: > 0 } && draft is ExtrudeFeature or RevolveFeature or LoftFeature) _cmd.SelectKind = "profiles";
         _cmd.Rebuild = BuildCommandPanel;
         BuildCommandPanel();
         RefreshPreview();
@@ -354,6 +397,61 @@ public sealed partial class MainWindow
                 p.AddNumber("축척 계수", sc.Factor, "", v => sc.Factor = v, Changed);
                 break;
 
+            case LoftFeature lf:
+                Select("프로파일", "profiles", lf.Profiles.Count, "프로파일", () => lf.Profiles.Clear());
+                p.AddText("서로 다른 스케치의 닫힌 프로파일을 순서대로 클릭하세요.");
+                p.AddCombo("작업", OpNames, OpIndex(lf.Operation), i => { lf.Operation = OpOrder[i]; Changed(); });
+                break;
+
+            case SweepFeature sw:
+                Select("프로파일", "profiles", sw.Profiles.Count, "프로파일", () => sw.Profiles.Clear());
+                Select("경로", "path", sw.Path.Count, "경로", () => sw.Path.Clear());
+                p.AddCombo("작업", OpNames, OpIndex(sw.Operation), i => { sw.Operation = OpOrder[i]; Changed(); });
+                break;
+
+            case SurfaceFeature sf:
+                Select(sf.Patch ? "경계" : "프로파일", "chains", sf.Chains.Count, "곡선", () => sf.Chains.Clear());
+                if (!sf.Patch) p.AddNumber("거리", sf.Distance, "mm", v => sf.Distance = v, Changed);
+                break;
+
+            case ThickenFeature th:
+                Select("면", "bodies", th.Bodies.Count, "곡면 본체", () => th.Bodies.Clear());
+                p.AddNumber("두께", th.Thickness, "mm", v => th.Thickness = v, Changed);
+                break;
+
+            case PressPullFeature pp:
+                Select("면", "face1", pp.Pick.Length == 3 ? 1 : 0, "면", () => { pp.Pick = Array.Empty<double>(); pp.Body = ""; });
+                p.AddNumber("거리", pp.Distance, "mm", v => pp.Distance = v, Changed);
+                break;
+
+            case FlangeFeature { Edge: false } fl:
+                Select("프로파일", "profiles", fl.Profiles.Count, "프로파일", () => fl.Profiles.Clear());
+                p.AddNumber("두께", fl.Thickness, "mm", v => fl.Thickness = v, Changed);
+                break;
+
+            case FlangeFeature fl:
+                Select("모서리", "edge1", fl.Pick.Length == 3 ? 1 : 0, "모서리", () => { fl.Pick = Array.Empty<double>(); fl.Body = ""; });
+                p.AddNumber("높이", fl.Height, "mm", v => fl.Height = v, Changed);
+                p.AddNumber("굽힘 반지름", fl.BendRadius, "mm", v => fl.BendRadius = v, Changed);
+                p.AddNumber("두께", fl.Thickness, "mm", v => fl.Thickness = v, Changed);
+                p.AddCombo("방향", new[] { "위", "아래" }, fl.Down ? 1 : 0, i => { fl.Down = i == 1; Changed(); });
+                p.AddInfo("펼친 길이", $"{fl.DevelopedLength:0.##} mm (K = 0.44)");
+                break;
+
+            case RibFeature rb:
+                Select("곡선", "chains", rb.Chains.Count, "곡선", () => rb.Chains.Clear());
+                p.AddNumber("두께", rb.Thickness, "mm", v => rb.Thickness = v, Changed);
+                p.AddNumber("깊이", rb.Depth, "mm", v => rb.Depth = v, Changed);
+                p.AddCheck("방향 뒤집기", rb.Flip, v => { rb.Flip = v; Changed(); });
+                break;
+
+            case BossFeature bo:
+                Select("위치", "face1", bo.Pick.Length == 3 ? 1 : 0, "점", () => { bo.Pick = Array.Empty<double>(); bo.Body = ""; });
+                p.AddNumber("지름", bo.Diameter, "mm", v => bo.Diameter = v, Changed);
+                p.AddNumber("구멍 지름", bo.HoleDiameter, "mm", v => bo.HoleDiameter = v, Changed);
+                p.AddNumber("높이", bo.Height, "mm", v => bo.Height = v, Changed);
+                break;
+
             case JointFeature jt:
                 p.AddHeader("위치");
                 Select("구성요소 1", "jointA", jt.PickA.Length == 3 ? 1 : 0, "원점", () => { jt.PickA = Array.Empty<double>(); jt.BodyA = ""; });
@@ -434,6 +532,8 @@ public sealed partial class MainWindow
         _cmd = null;
         CloseDialog();
         var used = ProfileList(draft)?.Select(r => r.Sketch).ToHashSet() ?? new HashSet<string>();
+        var chains = draft switch { SurfaceFeature sf => sf.Chains, RibFeature rb => rb.Chains, SweepFeature sw => sw.Path, _ => null };
+        if (chains != null) used.UnionWith(chains.Select(c => c.Sketch));
         Commit(() =>
         {
             if (c.EditIndex >= 0) _doc.Features[c.EditIndex] = draft;
@@ -463,7 +563,14 @@ public sealed partial class MainWindow
     private void CommandPickProfile(ProfileRef r)
     {
         if (ProfileList(_cmd?.Draft) is not { } list) return;
-        if (!list.Remove(r)) list.Add(r);
+        if (_cmd!.Draft is SweepFeature)
+        {
+            // one profile, then the path
+            list.Clear();
+            list.Add(r);
+            _cmd.SelectKind = "path";
+        }
+        else if (!list.Remove(r)) list.Add(r);
         BuildCommandPanel();
         RefreshPreview();
     }
@@ -482,6 +589,97 @@ public sealed partial class MainWindow
         else fl.Edges.Add(new[] { point.X, point.Y, point.Z });
         BuildCommandPanel();
         RefreshPreview();
+    }
+
+    private void CommandPickChain(ChainRef r)
+    {
+        var list = _cmd?.Draft switch { SurfaceFeature sf => sf.Chains, RibFeature rb => rb.Chains, SweepFeature sw => sw.Path, _ => null };
+        if (list == null) return;
+        if (_cmd!.Draft is SweepFeature) list.Clear();
+        if (!list.Remove(r)) list.Add(r);
+        BuildCommandPanel();
+        RefreshPreview();
+    }
+
+    /// <summary>Single face/point picks (press-pull, boss) and single edges (edge flange).</summary>
+    private void CommandPickPoint(string bodyId, V3 point)
+    {
+        switch (_cmd?.Draft)
+        {
+            case PressPullFeature pp: pp.Body = bodyId; pp.Pick = new[] { point.X, point.Y, point.Z }; break;
+            case BossFeature bo: bo.Body = bodyId; bo.Pick = new[] { point.X, point.Y, point.Z }; break;
+            case FlangeFeature fl: fl.Body = bodyId; fl.Pick = new[] { point.X, point.Y, point.Z }; break;
+            default: return;
+        }
+        BuildCommandPanel();
+        RefreshPreview();
+    }
+
+    private void ShowSheetRule()
+    {
+        CancelCommand();
+        _cmd = new CommandSession { Id = "sheetrule" };
+        double t = _doc.SheetThickness, r = _doc.SheetBendRadius;
+        var p = new CommandPanel("판금 규칙", "sheetrule", () =>
+        {
+            Commit(() => { _doc.SheetThickness = t; _doc.SheetBendRadius = r; });
+            CancelCommand();
+        }, CancelCommand);
+        p.AddNumber("두께", t, "mm", v => t = v);
+        p.AddNumber("굽힘 반지름", r, "mm", v => r = v);
+        p.AddInfo("K 계수", "0.44");
+        _cmd.Panel = p;
+        ShowDialog(p);
+    }
+
+    private (string plane, double offset, bool flip)? _section;
+    private readonly Dictionary<(uint, string, double, bool), Solid> _sectionCache = new();
+
+    /// <summary>Display-only half-space cut of a body for section analysis.</summary>
+    private Solid SectionOf(Solid s)
+    {
+        if (_section is not { } sec) return s;
+        var key = (s.Shape, sec.plane, sec.offset, sec.flip);
+        if (_sectionCache.TryGetValue(key, out var cut)) return cut;
+        var i = s.Info;
+        double big = (i.Max - i.Min).Length + 10;
+        var lo = i.Min - new V3(big, big, big);
+        var hi = i.Max + new V3(big, big, big);
+        var n = sec.plane switch { "XY" => V3.UnitZ, "XZ" => V3.UnitY, _ => V3.UnitX };
+        // keep the side below the plane (or above when flipped)
+        if (sec.plane == "XY") { if (sec.flip) lo = lo with { Z = sec.offset }; else hi = hi with { Z = sec.offset }; }
+        else if (sec.plane == "XZ") { if (sec.flip) lo = lo with { Y = sec.offset }; else hi = hi with { Y = sec.offset }; }
+        else { if (sec.flip) lo = lo with { X = sec.offset }; else hi = hi with { X = sec.offset }; }
+        _ = n;
+        try { cut = s.Boolean(Solid.Box(lo, hi), BoolOp.Intersect); }
+        catch (InvalidOperationException) { cut = s; }
+        if (_sectionCache.Count > 200) _sectionCache.Clear();
+        _sectionCache[key] = cut;
+        return cut;
+    }
+
+    private void ShowSection()
+    {
+        CancelCommand();
+        _cmd = new CommandSession { Id = "section" };
+        var cur = _section ?? ("XZ", 0, false);
+        string plane = cur.plane;
+        double offset = cur.offset;
+        bool flip = cur.flip;
+        void Apply()
+        {
+            _section = (plane, offset, flip);
+            UpdateItems();
+        }
+        var p = new CommandPanel("단면 분석", "section", CancelCommand, () => { _section = null; UpdateItems(); CancelCommand(); }, "확인");
+        var planes = new[] { "XY", "XZ", "YZ" };
+        p.AddCombo("평면", new[] { "XY 평면", "XZ 평면", "YZ 평면" }, Array.IndexOf(planes, plane), i => { plane = planes[i]; Apply(); });
+        p.AddNumber("간격띄우기", offset, "mm", v => { offset = v; Apply(); });
+        p.AddCheck("뒤집기", flip, v => { flip = v; Apply(); });
+        p.AddText("취소를 누르면 단면 분석을 끕니다.");
+        _cmd.Panel = p;
+        ShowDialog(p);
+        Apply();
     }
 
     private void CommandPickJoint(string bodyId, V3 point)

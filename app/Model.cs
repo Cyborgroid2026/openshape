@@ -138,6 +138,9 @@ public sealed record Piece(int Kind, double[] P)
     }
 }
 
+/// <summary>A connected run of sketch curves (Points is a polyline for display and picking).</summary>
+public sealed record Chain(int Index, List<P2> Points, List<Piece> Pieces, bool Closed);
+
 /// <summary>A closed loop of a sketch; Holes are the loops directly inside it. Loop is a polyline for display.</summary>
 public sealed record Profile(int Index, List<P2> Loop, double Area, List<int> Holes, List<Piece> Pieces)
 {
@@ -261,6 +264,50 @@ public static class Profiles
         return r;
     }
 
+    /// <summary>
+    /// Connected curve chains of a sketch (open chains and closed loops), for paths, ribs and
+    /// surface extrusions.
+    /// </summary>
+    public static List<Chain> Chains(SketchFeature s)
+    {
+        var result = new List<Chain>();
+        foreach (var e in s.Entities.Where(e => e.Closed))
+        {
+            var pts = e.Points();
+            pts.Add(pts[0]);
+            result.Add(new Chain(result.Count, pts, Piece.Of(e), true));
+        }
+        const double tol = 1e-6;
+        var open = s.Entities.Where(e => !e.Closed).Select(e => (pts: e.Points(), piece: Piece.Of(e)[0])).Where(o => o.pts.Count >= 2).ToList();
+        var used = new bool[open.Count];
+        for (int i = 0; i < open.Count; i++)
+        {
+            if (used[i]) continue;
+            used[i] = true;
+            var pts = new List<P2>(open[i].pts);
+            var pieces = new List<Piece> { open[i].piece };
+            bool grown = true;
+            while (grown)
+            {
+                grown = false;
+                for (int j = 0; j < open.Count; j++)
+                {
+                    if (used[j]) continue;
+                    var q = open[j].pts;
+                    if (q[0].Dist(pts[^1]) <= tol) { pts.AddRange(q.Skip(1)); pieces.Add(open[j].piece); }
+                    else if (q[^1].Dist(pts[^1]) <= tol) { pts.AddRange(Enumerable.Reverse(q).Skip(1)); pieces.Add(open[j].piece.Reversed()); }
+                    else if (q[^1].Dist(pts[0]) <= tol) { pts.InsertRange(0, q.Take(q.Count - 1)); pieces.Insert(0, open[j].piece); }
+                    else if (q[0].Dist(pts[0]) <= tol) { pts.InsertRange(0, Enumerable.Reverse(q).Take(q.Count - 1)); pieces.Insert(0, open[j].piece.Reversed()); }
+                    else continue;
+                    used[j] = true;
+                    grown = true;
+                }
+            }
+            result.Add(new Chain(result.Count, pts, pieces, pts[0].Dist(pts[^1]) <= tol));
+        }
+        return result;
+    }
+
     /// <summary>Innermost profile containing p, or -1.</summary>
     public static int Hit(List<Profile> all, P2 p) =>
         all.Where(pr => pr.Contains(p)).OrderBy(pr => pr.Area).Select(pr => pr.Index).DefaultIfEmpty(-1).First();
@@ -295,6 +342,14 @@ public sealed class ProfileRef
 [JsonDerivedType(typeof(FilletFeature), "fillet")]
 [JsonDerivedType(typeof(ShellFeature), "shell")]
 [JsonDerivedType(typeof(JointFeature), "joint")]
+[JsonDerivedType(typeof(LoftFeature), "loft")]
+[JsonDerivedType(typeof(SweepFeature), "sweep")]
+[JsonDerivedType(typeof(SurfaceFeature), "surface")]
+[JsonDerivedType(typeof(ThickenFeature), "thicken")]
+[JsonDerivedType(typeof(PressPullFeature), "presspull")]
+[JsonDerivedType(typeof(FlangeFeature), "flange")]
+[JsonDerivedType(typeof(RibFeature), "rib")]
+[JsonDerivedType(typeof(BossFeature), "boss")]
 public abstract class Feature
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..10];
@@ -471,6 +526,95 @@ public sealed class JointFeature : Feature
     public static string TypeName(string t) => t switch { "rigid" => "강체", "slider" => "슬라이더", "cylindrical" => "원통형", _ => "회전" };
 }
 
+public sealed class ChainRef
+{
+    public string Sketch { get; set; } = "";
+    public int Chain { get; set; }
+    public ChainRef() { }
+    public ChainRef(string sketch, int chain) { Sketch = sketch; Chain = chain; }
+    public override bool Equals(object? o) => o is ChainRef r && r.Sketch == Sketch && r.Chain == Chain;
+    public override int GetHashCode() => HashCode.Combine(Sketch, Chain);
+}
+
+public sealed class LoftFeature : Feature
+{
+    public List<ProfileRef> Profiles { get; set; } = new();
+    public BodyOp Operation { get; set; }
+    public List<string> Targets { get; set; } = new();
+    public override string Command => "loft";
+}
+
+public sealed class SweepFeature : Feature
+{
+    public List<ProfileRef> Profiles { get; set; } = new();
+    public List<ChainRef> Path { get; set; } = new();
+    public BodyOp Operation { get; set; }
+    public List<string> Targets { get; set; } = new();
+    public override string Command => "sweep";
+}
+
+/// <summary>Surface body: extruded from curves, or a patch filling a closed curve.</summary>
+public sealed class SurfaceFeature : Feature
+{
+    public bool Patch { get; set; }
+    public List<ChainRef> Chains { get; set; } = new();
+    public double Distance { get; set; } = 10;
+    public override string Command => Patch ? "patch" : "surfextrude";
+}
+
+public sealed class ThickenFeature : Feature
+{
+    public List<string> Bodies { get; set; } = new();
+    public double Thickness { get; set; } = 1;
+    public override string Command => "thicken";
+}
+
+public sealed class PressPullFeature : Feature
+{
+    public string Body { get; set; } = "";
+    public double[] Pick { get; set; } = Array.Empty<double>();
+    public double Distance { get; set; } = 5;
+    public override string Command => "presspull";
+}
+
+/// <summary>Sheet metal: a base flange (profile at sheet thickness) or an edge flange (bend + wall).</summary>
+public sealed class FlangeFeature : Feature
+{
+    public bool Edge { get; set; }
+    public List<ProfileRef> Profiles { get; set; } = new();
+    public string Body { get; set; } = "";
+    public double[] Pick { get; set; } = Array.Empty<double>();
+    public double Thickness { get; set; } = 1;
+    public double BendRadius { get; set; } = 1;
+    public double Height { get; set; } = 10;
+    public bool Down { get; set; }
+    public override string Command => Edge ? "edgeflange" : "flange";
+
+    /// <summary>Flat (developed) length of an edge flange with K-factor 0.44.</summary>
+    public double DevelopedLength => Math.PI / 2 * (BendRadius + 0.44 * Thickness) + Math.Max(0, Height - BendRadius - Thickness);
+}
+
+/// <summary>Plastic rib: a wall of given thickness grown from an open sketch curve into the part.</summary>
+public sealed class RibFeature : Feature
+{
+    public List<ChainRef> Chains { get; set; } = new();
+    public double Thickness { get; set; } = 2;
+    public double Depth { get; set; } = 10;
+    public bool Flip { get; set; }
+    public override string Command => "rib";
+}
+
+/// <summary>Plastic boss: a cylinder with a pilot hole on a planar face.</summary>
+public sealed class BossFeature : Feature
+{
+    public string Body { get; set; } = "";
+    public double[] Pick { get; set; } = Array.Empty<double>();
+    public double Diameter { get; set; } = 8;
+    public double HoleDiameter { get; set; } = 3;
+    public double Height { get; set; } = 10;
+    public override string Command => "boss";
+}
+
 public sealed class ComponentDef
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..10];
@@ -505,6 +649,9 @@ public sealed class Doc
     public int Marker { get; set; }
     public Dictionary<string, string> BodyNames { get; set; } = new();
     public List<ComponentDef> Components { get; set; } = new();
+    /// <summary>Sheet metal rule (판금 규칙).</summary>
+    public double SheetThickness { get; set; } = 1;
+    public double SheetBendRadius { get; set; } = 1;
     public Dictionary<string, string> BodyColors { get; set; } = new();
     public HashSet<string> HiddenBodies { get; set; } = new();
     public bool OriginVisible { get; set; }
@@ -536,6 +683,16 @@ public sealed class Doc
         ["shell"] = "쉘",
         ["insert"] = "삽입",
         ["joint"] = "접합",
+        ["loft"] = "로프트",
+        ["sweep"] = "스윕",
+        ["surfextrude"] = "돌출(곡면)",
+        ["patch"] = "패치",
+        ["thicken"] = "두껍게",
+        ["presspull"] = "누르기/당기기",
+        ["flange"] = "플랜지",
+        ["edgeflange"] = "모서리 플랜지",
+        ["rib"] = "리브",
+        ["boss"] = "보스",
     };
 
     /// <summary>Next free default name for a feature of this command ("돌출1", "돌출2" ...).</summary>
@@ -814,6 +971,153 @@ public static class Evaluator
                 break;
             }
 
+            case LoftFeature lf:
+            {
+                if (lf.Profiles.Count < 2) throw new InvalidOperationException("프로파일을 두 개 이상 선택하세요.");
+                var sections = lf.Profiles.Select(r =>
+                {
+                    var region = RegionOf(s, r, out var sk);
+                    return (sk.Frame, (IReadOnlyList<Profile>)region.Take(1).ToList());
+                }).ToList();
+                Combine(s, f.Id, Solid.Loft(sections), lf.Operation, lf.Targets);
+                break;
+            }
+
+            case SweepFeature sw:
+            {
+                if (sw.Profiles.Count == 0) throw new InvalidOperationException("프로파일을 선택하세요.");
+                if (sw.Path.Count == 0) throw new InvalidOperationException("경로를 선택하세요.");
+                var region = RegionOf(s, sw.Profiles[0], out var psk);
+                var (pathSketch, chain) = ChainOf(s, sw.Path[0]);
+                Combine(s, f.Id, Solid.Sweep(psk.Frame, region, pathSketch.Frame, chain.Pieces), sw.Operation, sw.Targets);
+                break;
+            }
+
+            case SurfaceFeature sf:
+            {
+                if (sf.Chains.Count == 0) throw new InvalidOperationException("곡선을 선택하세요.");
+                int k = 0;
+                foreach (var cr in sf.Chains)
+                {
+                    var (sk, chain) = ChainOf(s, cr);
+                    Solid surface;
+                    if (sf.Patch)
+                    {
+                        if (!chain.Closed) throw new InvalidOperationException("패치에는 닫힌 곡선이 필요합니다.");
+                        surface = Solid.Patch(sk.Frame, chain.Pieces);
+                    }
+                    else surface = Solid.SurfaceExtrude(sk.Frame, chain.Pieces, Math.Min(0, sf.Distance), Math.Max(0, sf.Distance));
+                    s.Bodies.Add(new Body { Id = $"{f.Id}:{k++}", Solid = surface });
+                }
+                break;
+            }
+
+            case ThickenFeature th:
+            {
+                var bodies = Pick(s, th.Bodies);
+                if (Math.Abs(th.Thickness) < 1e-9) throw new InvalidOperationException("두께를 입력하세요.");
+                foreach (var b in bodies) Replace(s, b, b.Solid.Thicken(th.Thickness));
+                break;
+            }
+
+            case PressPullFeature pp:
+            {
+                var body = s.Find(pp.Body) ?? throw new InvalidOperationException("면을 선택하세요.");
+                if (pp.Pick.Length != 3) throw new InvalidOperationException("면을 선택하세요.");
+                Replace(s, body, body.Solid.PressPull(new V3(pp.Pick[0], pp.Pick[1], pp.Pick[2]), pp.Distance));
+                break;
+            }
+
+            case FlangeFeature fl when !fl.Edge:
+            {
+                if (fl.Profiles.Count == 0) throw new InvalidOperationException("프로파일을 선택하세요.");
+                Solid? tool = null;
+                foreach (var r in fl.Profiles)
+                {
+                    var region = RegionOf(s, r, out var sk);
+                    var part = Solid.Extrude(sk.Frame, region, 0, fl.Thickness);
+                    tool = tool == null ? part : tool.Boolean(part, BoolOp.Union);
+                }
+                s.Bodies.Add(new Body { Id = f.Id + ":0", Solid = tool! });
+                break;
+            }
+
+            case FlangeFeature fl:
+            {
+                var body = s.Find(fl.Body) ?? throw new InvalidOperationException("모서리를 선택하세요.");
+                if (fl.Pick.Length != 3) throw new InvalidOperationException("모서리를 선택하세요.");
+                var fr = body.Solid.EdgeFlangeFrame(new V3(fl.Pick[0], fl.Pick[1], fl.Pick[2])) ?? throw new InvalidOperationException("직선 모서리를 선택하세요.");
+                double t = fl.Thickness, r = fl.BendRadius, h = Math.Max(fl.Height, r + t + 1e-3);
+                // the edge is on the sheet's top face; bend up (or down) around the edge and rise to the height
+                var n = fl.Down ? -fr.normal : fr.normal;
+                var origin = fl.Down ? fr.o - fr.normal * t : fr.o;
+                var plane = new PlaneFrame(origin, fr.outward, n, fr.outward.Cross(n));
+                double sgn = plane.N.Dot(fr.dir) >= 0 ? 1 : -1;
+                var c45 = Math.Cos(Math.PI / 4);
+                var pieces = new List<Piece>
+                {
+                    new(1, new[] { 0.0, 0.0, r * c45, r - r * c45, r, r }),
+                    new(0, new[] { r, r, r, h }),
+                    new(0, new[] { r, h, r + t, h }),
+                    new(0, new[] { r + t, h, r + t, r }),
+                    // outer arc: centre (0, r), radius r + t, through its -45° point
+                    new(1, new[] { r + t, r, (r + t) * c45, r - (r + t) * c45, 0.0, -t }),
+                    new(0, new[] { 0.0, -t, 0.0, 0.0 }),
+                };
+                var profile = new Profile(0, new List<P2>(), 1, new List<int>(), pieces);
+                var wall = Solid.Extrude(plane, new[] { profile }, sgn > 0 ? 0 : -fr.length, sgn > 0 ? fr.length : 0);
+                Replace(s, body, body.Solid.Boolean(wall, BoolOp.Union));
+                break;
+            }
+
+            case RibFeature rb:
+            {
+                if (rb.Chains.Count == 0) throw new InvalidOperationException("리브 곡선을 선택하세요.");
+                Solid? tool = null;
+                foreach (var cr in rb.Chains)
+                {
+                    var (sk, chain) = ChainOf(s, cr);
+                    foreach (var piece in chain.Pieces.Where(p => p.Kind == 0))
+                    {
+                        var a = new P2(piece.P[0], piece.P[1]);
+                        var b = new P2(piece.P[2], piece.P[3]);
+                        var d = b - a;
+                        double len = d.Length;
+                        if (len < 1e-9) continue;
+                        // the wall grows from the curve towards the part (in the sketch plane) and is
+                        // centred on the sketch plane through its thickness, like Fusion's rib
+                        var side = new P2(-d.Y / len, d.X / len) * (rb.Flip ? rb.Depth : -rb.Depth);
+                        var rect = new List<P2> { a, b, b + side, a + side };
+                        var loop = rect.Select((q, i) => { var q2 = rect[(i + 1) % 4]; return new Piece(0, new[] { q.X, q.Y, q2.X, q2.Y }); }).ToList();
+                        var region = new List<Profile> { new(0, rect, 1, new List<int>(), loop) };
+                        var part = Solid.Extrude(sk.Frame, region, -rb.Thickness / 2, rb.Thickness / 2);
+                        tool = tool == null ? part : tool.Boolean(part, BoolOp.Union);
+                    }
+                }
+                if (tool == null) throw new InvalidOperationException("리브에는 직선 곡선이 필요합니다.");
+                Combine(s, f.Id, tool, BodyOp.Join, new List<string>());
+                break;
+            }
+
+            case BossFeature bo:
+            {
+                var body = s.Find(bo.Body) ?? throw new InvalidOperationException("보스를 놓을 면을 선택하세요.");
+                if (bo.Pick.Length != 3) throw new InvalidOperationException("보스를 놓을 면을 선택하세요.");
+                var pick = new V3(bo.Pick[0], bo.Pick[1], bo.Pick[2]);
+                var frame = body.Solid.FaceFrame(pick) ?? throw new InvalidOperationException("평면인 면을 선택하세요.");
+                var c = frame.Project(pick);
+                var outer = new List<Profile> { CircleProfile(c, bo.Diameter / 2) };
+                var boss = Solid.Extrude(frame, outer, 0, bo.Height);
+                var result = body.Solid.Boolean(boss, BoolOp.Union);
+                if (bo.HoleDiameter > 0)
+                {
+                    var hole = Solid.Extrude(frame, new List<Profile> { CircleProfile(c, bo.HoleDiameter / 2) }, -bo.Height, bo.Height + 1e-3);
+                    result = result.Boolean(hole, BoolOp.Subtract);
+                }
+                Replace(s, body, result);
+                break;
+            }
+
             case JointFeature j:
             {
                 var a = s.Find(j.BodyA) ?? throw new InvalidOperationException("구성요소 1의 접합 원점을 선택하세요.");
@@ -850,6 +1154,17 @@ public static class Evaluator
     }
 
     private static double Pos(double v) => Math.Max(1e-3, Math.Abs(v));
+
+    private static Profile CircleProfile(P2 c, double r) =>
+        new(0, Enumerable.Range(0, 32).Select(i => new P2(c.X + r * Math.Cos(i * Math.PI / 16), c.Y + r * Math.Sin(i * Math.PI / 16))).ToList(), Math.PI * r * r, new List<int>(), new List<Piece> { new(2, new[] { c.X, c.Y, r }) });
+
+    private static (SketchFeature sketch, Chain chain) ChainOf(ModelState s, ChainRef r)
+    {
+        var sk = s.Sketches.FirstOrDefault(k => k.Id == r.Sketch) ?? throw new InvalidOperationException("참조한 스케치가 없습니다.");
+        var chains = Profiles.Chains(sk);
+        if (r.Chain < 0 || r.Chain >= chains.Count) throw new InvalidOperationException("참조한 곡선이 스케치에서 사라졌습니다.");
+        return (sk, chains[r.Chain]);
+    }
 
     public static V3 Axis(string a) => a switch { "X" => V3.UnitX, "Y" => V3.UnitY, _ => V3.UnitZ };
 
