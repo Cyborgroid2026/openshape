@@ -1245,7 +1245,7 @@ public sealed partial class MainWindow : Window
     private void ShowAbout()
     {
         var panel = new CommandPanel("정보", null, () => CloseDialog(), null);
-        panel.AddText("OpenShape CAD 1.4.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
+        panel.AddText("OpenShape CAD 1.4.1\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
                       "Autodesk의 코드나 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다. " +
                       "아이콘과 리소스는 모두 OpenShape가 직접 그린 것이며 Wine이나 Windows용 프로그램 없이 Ubuntu에서만 동작합니다.\n\n" +
                       "작업공간: 디자인, 렌더(경로 추적), 도면(PDF·DXF), 제조(2.5축 밀링, G코드).\n" +

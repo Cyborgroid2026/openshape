@@ -8,7 +8,7 @@ Autodesk의 코드, 아이콘, 리소스는 포함되어 있지 않으며 Autode
 [Releases](../../releases)에서 `openshape_<버전>_amd64.deb`를 받아 설치합니다.
 
 ```
-sudo apt install ./openshape_1.4.0_amd64.deb
+sudo apt install ./openshape_1.4.1_amd64.deb
 ```
 
 저장소에서 직접 만든 경우 `sh packaging/install-deb.sh`로 설치하면 Ubuntu 24.04에서 apt의 부가 메시지("Download is performed unsandboxed...", "더 이상 필요하지 않습니다" 목록) 없이 설치됩니다.

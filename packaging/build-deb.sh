@@ -2,7 +2,7 @@
 # Build the Rust engine and the self-contained C# app, run the tests, then package a .deb.
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION=1.4.0
+VERSION=1.4.1
 ARCH=amd64
 PKG=openshape_${VERSION}_${ARCH}
 STAGE="$ROOT/build/$PKG"
@@ -65,7 +65,9 @@ Comment[ko]=최신 OpenShape CAD를 내려받아 설치합니다
 Exec=/opt/openshape/openshape-installer
 Icon=openshape
 Terminal=false
-Categories=Graphics;Settings;
+Categories=Settings;
+# not listed in the app menu: the app runs it from 도움말 > 업데이트 확인 and the notification centre
+NoDisplay=true
 DESKTOP
 
 cat > "$STAGE/usr/share/mime/packages/openshape.xml" <<MIME
