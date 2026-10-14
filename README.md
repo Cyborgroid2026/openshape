@@ -1,7 +1,7 @@
 # OpenShape CAD
 
 Ubuntu용 파라메트릭 3D CAD입니다. 화면 구성(응용프로그램 막대, 도구막대, 브라우저, 타임라인, ViewCube, 탐색 막대)과 사용 흐름은 Autodesk Fusion을 참고했고, 코드는 C#(Avalonia)과 Rust로 새로 작성했으며 형상 엔진은 OpenCASCADE, 스케치 구속조건 해석은 SolveSpace(libslvs)를 씁니다.
-Autodesk의 코드, 아이콘, 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다.
+Autodesk의 코드, 아이콘, 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다. 아이콘은 모두 직접 그린 것이고, Wine·Windows 구성요소나 Autodesk 클라우드 없이 Ubuntu에서만 동작합니다.
 
 ## 설치
 
@@ -22,9 +22,8 @@ sudo apt install ./openshape_1.0.0_amd64.deb
 
 - 관리: 사용자 매개변수와 식(숫자 칸·스케치 치수에 매개변수 이름 입력)
 - 스케치 자르기, 접선·대칭 구속, 볼·핀-슬롯·평면형 접합과 한계값, 판금 평면 패턴(DXF 내보내기)
-- 데이터 패널: Fusion 클라우드 동기화 디자인과 최근 문서, Fusion `.f3d`는 Autodesk APS로 STEP 변환 후 열기(Flex 토큰이 쓰일 수 있음)
+- 데이터 패널: 새 디자인, 열기, 최근 문서
 - IsaacSimLink 내장: Isaac Sim으로 형상(STEP) 또는 로봇(URDF: 링크·접합·질량·관성) 보내기, 저장할 때 자동 동기화
-- `/opt/openshape/replace-fusion-shortcuts.sh`: 바탕화면·앱 메뉴의 Fusion 바로가기를 OpenShape로 바꿈(백업, `--restore`로 되돌리기)
 
 알려진 한계: URDF에는 볼·핀-슬롯·원통형 접합이 없어 고정으로 보냅니다. 평면 패턴은 OpenShape 판금 플랜지로 만든 본체만 펼칩니다.
 

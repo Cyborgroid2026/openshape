@@ -13,15 +13,8 @@ Directory.CreateDirectory(outDir);
 AppBuilder.Configure<App>().UseSkia().UseHeadless(new AvaloniaHeadlessPlatformOptions { UseHeadlessDrawing = false }).SetupWithoutStarting();
 
 // never talk to a running Isaac Sim or write into the real exchange folder from tests
-var realExchange = OpenShape.IsaacLink.Exchange;
 var testExchange = Path.Combine(Path.GetFullPath(outDir), "exchange");
-Directory.CreateDirectory(Path.Combine(testExchange, "cloud"));
-var realCloud = Path.Combine(realExchange, "cloud", "XL_430_new");
-if (Directory.Exists(realCloud))
-{
-    Directory.CreateDirectory(Path.Combine(testExchange, "cloud", "XL_430_new"));
-    foreach (var f in Directory.GetFiles(realCloud)) File.Copy(f, Path.Combine(testExchange, "cloud", "XL_430_new", Path.GetFileName(f)), true);
-}
+Directory.CreateDirectory(testExchange);
 OpenShape.IsaacLink.Exchange = testExchange;
 OpenShape.IsaacLink.Port = 1;   // nothing listens there
 var w = new MainWindow(Array.Empty<string>()) { Width = 1500, Height = 920, AutoSyncOnSave = false, CheckForUpdates = false };
@@ -411,18 +404,6 @@ Check(w.ExportTo(stepFile, 3, false) == nb && new FileInfo(stepFile).Length > 10
 w.InsertFilePath(stepFile);
 Check(w.State.Bodies.Count == nb * 2 && Near(Volume(), total * 2, 1e-4), "re-imported STEP has the same exact bodies");
 
-// a real Fusion cloud design (STEP from the cloud sync), when present on this machine
-var cloud = Path.Combine(testExchange, "cloud", "XL_430_new", "XL_430_new.step");
-if (File.Exists(cloud))
-{
-    w.OpenPath(cloud);
-    Pump();
-    Check(w.State.Bodies.Count > 0 && Volume() > 0 && w.Document.Features[0].Error == null, $"Fusion design XL_430_new.step opens ({w.State.Bodies.Count} bodies, {Volume() / 1000:0.0} cm³)");
-    w.View.SetView(-55, 28);
-    w.FitAll();
-    Shot("fusion_step");
-}
-else Console.WriteLine("SKIP  Fusion cloud STEP not found");
 
 
 // ================= components and joints =================
@@ -791,12 +772,7 @@ Key(Avalonia.Input.Key.Escape);
 w.ToggleDataPanel();
 Pump();
 Check(w.DataPanelVisible && w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "데이터 패널"), "the data panel opens from the application bar");
-if (Directory.Exists(Path.Combine(testExchange, "cloud", "XL_430_new")))
-{
-    Shot("data_panel");
-    Click(Text("XL_430_new"));
-    Check(w.State.Bodies.Count > 20, "a Fusion cloud design opens from the data panel");
-}
+Shot("data_panel");
 w.ToggleDataPanel();
 
 // ================= keyboard shortcuts =================

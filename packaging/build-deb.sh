@@ -2,7 +2,7 @@
 # Build the Rust engine and the self-contained C# app, run the tests, then package a .deb.
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION=1.2.0
+VERSION=1.3.0
 ARCH=amd64
 PKG=openshape_${VERSION}_${ARCH}
 STAGE="$ROOT/build/$PKG"
@@ -37,7 +37,6 @@ dotnet publish "$ROOT/installer/Installer.csproj" -c Release -r linux-x64 --self
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true \
     -p:DebugType=none -o "$ROOT/build/installer"
 install -m 755 "$ROOT/build/installer/openshape-installer" "$STAGE/opt/openshape/openshape-installer"
-install -m 755 "$ROOT/packaging/replace-fusion-shortcuts.sh" "$STAGE/opt/openshape/replace-fusion-shortcuts.sh"
 
 cat > "$STAGE/usr/share/applications/openshape.desktop" <<DESKTOP
 [Desktop Entry]
@@ -96,13 +95,13 @@ Description: Parametric 3D CAD for Ubuntu
  primitives, surfaces (extrude, patch, thicken), sheet metal flanges,
  plastic ribs and bosses, press/pull, section analysis, parameters, sketch
  trim, tangent/symmetric constraints, flat patterns with DXF export, data
- panel for Fusion cloud designs, .f3d conversion via Autodesk APS, built-in
- IsaacSimLink (send geometry or URDF robots to Isaac Sim),
+ panel with recent designs, built-in IsaacSimLink (send geometry or URDF robots to Isaac Sim),
  booleans, fillet, chamfer, shell, sketch dimensions and constraints
  (SolveSpace solver), components and rigid/revolute/slider
  joints, move, mirror, patterns, STEP/IGES import,
  STEP/STL/OBJ/USD export (USD with UsdPhysics joints for Isaac Sim). UI in C# (Avalonia), B-rep geometry by
  OpenCASCADE, display and mesh I/O in Rust.
+ Runs natively on Ubuntu (no Wine, no Windows components).
  Contains no Autodesk code or assets.
 CONTROL
 cat > "$STAGE/DEBIAN/postinst" <<'POST'

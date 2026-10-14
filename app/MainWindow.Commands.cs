@@ -1093,14 +1093,8 @@ public sealed partial class MainWindow
         return Solid.Export(bodies, path, (uint)format) ? bodies.Count : -1;
     }
 
-    /// <summary>Where Fusion cloud designs land as STEP (fusion-webviewer cloud sync), when present.</summary>
-    private static string CloudFolder => Path.Combine(IsaacLink.Exchange, "cloud");
-
     private static readonly FilePickerFileType CadTypes = new("CAD 파일 (STEP, IGES)") { Patterns = new[] { "*.step", "*.stp", "*.STEP", "*.STP", "*.iges", "*.igs" } };
     private static readonly FilePickerFileType MeshTypes = new("메쉬 (STL, OBJ)") { Patterns = new[] { "*.stl", "*.STL", "*.obj" } };
-
-    private async Task<IStorageFolder?> StartFolder(bool cad) =>
-        cad && Directory.Exists(CloudFolder) ? await StorageProvider.TryGetFolderFromPathAsync(CloudFolder) : null;
 
     private async Task InsertFile(bool cad)
     {
@@ -1108,7 +1102,6 @@ public sealed partial class MainWindow
         {
             Title = cad ? "CAD 파일 삽입" : "메쉬 삽입",
             FileTypeFilter = new[] { cad ? CadTypes : MeshTypes },
-            SuggestedStartLocation = await StartFolder(cad),
         });
         if (files.Count > 0 && files[0].TryGetLocalPath() is { } p) InsertFilePath(p);
     }
@@ -1175,8 +1168,7 @@ public sealed partial class MainWindow
     // ------------------------------------------------------------ files
 
     private static readonly FilePickerFileType ProjectType = new("OpenShape CAD 디자인") { Patterns = new[] { "*.osc" } };
-    private static readonly FilePickerFileType AnyType = new("열 수 있는 모든 파일") { Patterns = new[] { "*.osc", "*.f3d", "*.step", "*.stp", "*.STEP", "*.STP", "*.iges", "*.igs", "*.stl", "*.STL", "*.obj" } };
-    private static readonly FilePickerFileType F3dType = new("Fusion 디자인 (.f3d)") { Patterns = new[] { "*.f3d" } };
+    private static readonly FilePickerFileType AnyType = new("열 수 있는 모든 파일") { Patterns = new[] { "*.osc", "*.step", "*.stp", "*.STEP", "*.STP", "*.iges", "*.igs", "*.stl", "*.STL", "*.obj" } };
 
     // ------------------------------------------------------------ data panel
 
@@ -1194,17 +1186,6 @@ public sealed partial class MainWindow
     {
         _dataPanel.IsVisible = !_dataPanel.IsVisible;
         if (_dataPanel.IsVisible) BuildDataPanel();
-    }
-
-    /// <summary>Designs synced from the Fusion cloud (as STEP), newest first.</summary>
-    public static List<(string name, string path, DateTime time)> CloudDesigns()
-    {
-        if (!Directory.Exists(CloudFolder)) return new();
-        return Directory.EnumerateDirectories(CloudFolder)
-            .Select(d => Directory.EnumerateFiles(d).FirstOrDefault(f => f.EndsWith(".step", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".stp", StringComparison.OrdinalIgnoreCase)))
-            .Where(f => f != null)
-            .Select(f => (Path.GetFileNameWithoutExtension(f!), f!, File.GetLastWriteTime(f!)))
-            .OrderByDescending(x => x.Item3).ToList();
     }
 
     private void BuildDataPanel()
@@ -1225,7 +1206,6 @@ public sealed partial class MainWindow
         }
         list.Children.Add(Action("새 디자인", "plus", () => _ = NewDesign()));
         list.Children.Add(Action("열기...", "file", () => _ = OpenFile()));
-        list.Children.Add(Action("Fusion 디자인(.f3d) 변환해서 열기...", "datapanel", () => _ = OpenF3dPicker()));
         void Section(string title) => list.Children.Add(new TextBlock { Text = title, FontSize = 12, FontWeight = FontWeight.SemiBold, Foreground = Ui.Muted, Margin = new Thickness(12, 14, 12, 4) });
         FlatButton Item(string title, string sub, string icon, Action a)
         {
@@ -1247,14 +1227,6 @@ public sealed partial class MainWindow
             b.Click += a;
             return b;
         }
-        Section("Fusion 클라우드 (동기화된 디자인)");
-        var cloud = CloudDesigns();
-        if (cloud.Count == 0) list.Children.Add(new TextBlock { Text = "동기화된 디자인이 없습니다. Fusion 클라우드 동기화(cloud_sync)가 STEP을 받아 오면 여기에 나타납니다.", FontSize = 11, Foreground = Ui.Muted, TextWrapping = TextWrapping.Wrap, Margin = new Thickness(12, 0) });
-        foreach (var (name, path, time) in cloud)
-        {
-            var p = path;
-            list.Children.Add(Item(name, time.ToString("yyyy-MM-dd HH:mm"), "insertcad", () => OpenPath(p)));
-        }
         Section("최근 문서");
         var recent = Recent();
         if (recent.Count == 0) list.Children.Add(new TextBlock { Text = "아직 없습니다.", FontSize = 11, Foreground = Ui.Muted, Margin = new Thickness(12, 0) });
@@ -1264,39 +1236,6 @@ public sealed partial class MainWindow
             list.Children.Add(Item(Path.GetFileNameWithoutExtension(r), r, "design", () => OpenPath(p)));
         }
         _dataPanel.Child = new ScrollViewer { Content = list, HorizontalScrollBarVisibility = Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled };
-    }
-
-    private async Task OpenF3dPicker()
-    {
-        var files = await StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions { Title = "Fusion 디자인 열기", FileTypeFilter = new[] { F3dType } });
-        if (files.Count > 0 && files[0].TryGetLocalPath() is { } p) await OpenF3d(p);
-    }
-
-    /// <summary>.f3d is Autodesk's closed format: convert it through the Autodesk cloud (with consent), then open the STEP.</summary>
-    private async Task OpenF3d(string path)
-    {
-        if (!Aps.Configured)
-        {
-            await Ask("Fusion 디자인", $".f3d는 Autodesk 전용 형식이라 직접 열 수 없습니다. Autodesk 클라우드 변환에 쓸 APS 설정이 없습니다:\n{Aps.ConfigFile}\n\nFusion 클라우드 동기화로 받은 STEP은 데이터 패널에서 바로 열 수 있습니다.", "확인");
-            return;
-        }
-        if (await Ask("Fusion 디자인 변환", $"{Path.GetFileName(path)}\n\n.f3d는 Autodesk 전용 형식이라 Autodesk 클라우드(Model Derivative)에서 STEP으로 변환한 뒤 엽니다. 파일이 Autodesk 서버로 올라가며, 변환에 Autodesk Flex 토큰이 쓰일 수 있습니다. 계속할까요?", "변환", "취소") != 0) return;
-        var panel = new CommandPanel("Fusion 디자인 변환", "insertcad", null, CancelCommand);
-        var status = new TextBlock { Text = "준비 중...", FontSize = 12, TextWrapping = TextWrapping.Wrap };
-        panel.AddControl(status);
-        CancelCommand();
-        _cmd = new CommandSession { Id = "f3d", Panel = panel };
-        ShowDialog(panel);
-        try
-        {
-            var step = await Aps.F3dToStep(path, new Progress<string>(m => status.Text = m));
-            CancelCommand();
-            OpenPath(step);
-        }
-        catch (Exception ex)
-        {
-            panel.SetError(ex.Message);
-        }
     }
 
     private async Task<bool> ConfirmDiscard()
@@ -1338,11 +1277,6 @@ public sealed partial class MainWindow
     {
         try
         {
-            if (p.EndsWith(".f3d", StringComparison.OrdinalIgnoreCase))
-            {
-                _ = OpenF3d(p);
-                return;
-            }
             if (p.EndsWith(".osc", StringComparison.OrdinalIgnoreCase))
             {
                 ResetTo(Doc.Load(File.ReadAllText(p)), p);

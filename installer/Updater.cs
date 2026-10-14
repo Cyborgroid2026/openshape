@@ -137,11 +137,24 @@ public static class Updater
         return (p.ExitCode, output);
     }
 
-    /// <summary>Like the original's "Creating shortcut on Desktop" step: OpenShape on the desktop, Fusion shortcuts moved aside.</summary>
+    /// <summary>Like the original's "Creating shortcut on Desktop" step: puts OpenShape on the desktop.</summary>
     public static void CreateShortcuts()
     {
-        const string script = "/opt/openshape/replace-fusion-shortcuts.sh";
-        if (File.Exists(script)) RunCapture("/bin/sh", script);
+        const string entry = "/usr/share/applications/openshape.desktop";
+        if (!File.Exists(entry)) return;
+        var desktop = RunCapture("xdg-user-dir", "DESKTOP") is { Length: > 0 } d ? d : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Desktop");
+        try
+        {
+            Directory.CreateDirectory(desktop);
+            var target = Path.Combine(desktop, "openshape.desktop");
+            File.Copy(entry, target, true);
+            File.SetUnixFileMode(target, File.GetUnixFileMode(target) | UnixFileMode.UserExecute);
+            RunCapture("gio", $"set \"{target}\" metadata::trusted true");
+        }
+        catch (Exception)
+        {
+            // read-only desktop folder
+        }
     }
 
     public static void OpenFolder(string dir)

@@ -8,12 +8,11 @@
     <AssemblyName>openshape</AssemblyName>
     <RootNamespace>OpenShape</RootNamespace>
     <InvariantGlobalization>true</InvariantGlobalization>
-    <Version>1.2.0</Version>
+    <Version>1.3.0</Version>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Avalonia" Version="11.3.22" />
     <PackageReference Include="Avalonia.Desktop" Version="11.3.22" />
-    <PackageReference Include="Avalonia.Svg.Skia" Version="11.2.0.2" />
     <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.22" />
   </ItemGroup>
   <ItemGroup>
