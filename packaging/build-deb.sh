@@ -2,7 +2,7 @@
 # Build the Rust engine and the self-contained C# app, run the tests, then package a .deb.
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VERSION=1.3.0
+VERSION=1.3.1
 ARCH=amd64
 PKG=openshape_${VERSION}_${ARCH}
 STAGE="$ROOT/build/$PKG"
@@ -37,6 +37,7 @@ dotnet publish "$ROOT/installer/Installer.csproj" -c Release -r linux-x64 --self
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:EnableCompressionInSingleFile=true \
     -p:DebugType=none -o "$ROOT/build/installer"
 install -m 755 "$ROOT/build/installer/openshape-installer" "$STAGE/opt/openshape/openshape-installer"
+install -m 755 "$ROOT/tools/ubuntu-tidy.sh" "$STAGE/opt/openshape/ubuntu-tidy.sh"
 
 cat > "$STAGE/usr/share/applications/openshape.desktop" <<DESKTOP
 [Desktop Entry]

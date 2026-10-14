@@ -11,6 +11,12 @@ Autodesk의 코드, 아이콘, 리소스는 포함되어 있지 않으며 Autode
 sudo apt install ./openshape_1.0.0_amd64.deb
 ```
 
+저장소에서 직접 만든 경우 `sh packaging/install-deb.sh`로 설치하면 Ubuntu 24.04에서 apt의 부가 메시지("Download is performed unsandboxed...", "더 이상 필요하지 않습니다" 목록) 없이 설치됩니다.
+
+### 시스템 정리 (Ubuntu 24.04)
+
+`/opt/openshape/ubuntu-tidy.sh`(저장소: `tools/ubuntu-tidy.sh`)는 apt가 "더 이상 필요하지 않음"으로 표시한 패키지를 나눠 보여 줍니다. Wine이 쓰는 32비트 라이브러리와 apt 밖의 프로그램(예: 소스로 빌드한 ROS)이 쓰는 라이브러리·Python 모듈은 유지로 표시하고, 개발용 패키지와 아무것도 쓰지 않는 런타임만 제거합니다. 인자 없이 실행하면 보고만 하고, `--apply`로 적용, `--restore <목록>`으로 되돌립니다.
+
 ## 기능
 
 - 스케치: XY·XZ·YZ 평면(간격띄우기)과 본체의 평면 면 위에 선, 직사각형, 원, 3점 호, 다각형. 치수(거리·지름·각도)와 구속조건(일치·수평/수직·평행·직각·동일·고정·중간점·동심), 그리면서 자동 구속, 점 끌기

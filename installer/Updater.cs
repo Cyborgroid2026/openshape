@@ -108,6 +108,9 @@ public static class Updater
             }
         }
         File.Move(path + ".part", path, true);
+        // apt reads the package as the unprivileged _apt user; without this it warns "Download is performed unsandboxed"
+        File.SetUnixFileMode(dir, File.GetUnixFileMode(dir) | UnixFileMode.GroupRead | UnixFileMode.GroupExecute | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
+        File.SetUnixFileMode(path, File.GetUnixFileMode(path) | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
         if (new FileInfo(path).Length != r.Size) throw new InvalidOperationException("내려받은 파일 크기가 맞지 않습니다.");
         if (r.Sha256 != null)
         {
@@ -124,7 +127,7 @@ public static class Updater
     /// <summary>Install the .deb with apt through pkexec (graphical password prompt). Returns the exit code and output.</summary>
     public static async Task<(int code, string output)> Install(string deb, CancellationToken ct = default)
     {
-        var psi = new ProcessStartInfo("pkexec", $"apt-get install -y --allow-downgrades \"{deb}\"")
+        var psi = new ProcessStartInfo("pkexec", $"apt-get install -y -o APT::Get::HideAutoRemove=1 --allow-downgrades \"{deb}\"")
         {
             RedirectStandardOutput = true,
             RedirectStandardError = true,
