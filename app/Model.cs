@@ -350,6 +350,12 @@ public sealed class ProfileRef
 [JsonDerivedType(typeof(FlangeFeature), "flange")]
 [JsonDerivedType(typeof(RibFeature), "rib")]
 [JsonDerivedType(typeof(BossFeature), "boss")]
+[JsonDerivedType(typeof(HoleFeature), "hole")]
+[JsonDerivedType(typeof(SplitBodyFeature), "splitbody")]
+[JsonDerivedType(typeof(DraftFeature), "draft")]
+[JsonDerivedType(typeof(CoilFeature), "coil")]
+[JsonDerivedType(typeof(PipeFeature), "pipe")]
+[JsonDerivedType(typeof(StitchFeature), "stitch")]
 public abstract class Feature
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..10];
@@ -572,13 +578,96 @@ public sealed class SweepFeature : Feature
     public override string Command => "sweep";
 }
 
-/// <summary>Surface body: extruded from curves, or a patch filling a closed curve.</summary>
+/// <summary>
+/// Surface body from sketch curves: extruded, a patch filling a closed curve, revolved about a sketch
+/// axis, swept along a path, or lofted through several curves (Kind "", "revolve", "sweep", "loft").
+/// </summary>
 public sealed class SurfaceFeature : Feature
 {
     public bool Patch { get; set; }
+    public string Kind { get; set; } = "";
     public List<ChainRef> Chains { get; set; } = new();
+    public List<ChainRef> Path { get; set; } = new();
     public double Distance { get; set; } = 10;
-    public override string Command => Patch ? "patch" : "surfextrude";
+    public int Axis { get; set; } = 1;      // as RevolveFeature.Axis
+    public double Angle { get; set; } = 360;
+    public override string Command => Patch ? "patch" : Kind switch { "revolve" => "surfrevolve", "sweep" => "surfsweep", "loft" => "surfloft", _ => "surfextrude" };
+}
+
+/// <summary>Hole on a planar face at one or more points: simple, counterbore or countersink.</summary>
+public sealed class HoleFeature : Feature
+{
+    public string Body { get; set; } = "";
+    public List<double[]> Points { get; set; } = new();
+    public string Type { get; set; } = "simple";    // simple, counterbore, countersink
+    public double Diameter { get; set; } = 6;
+    public double Depth { get; set; } = 10;
+    public bool ThroughAll { get; set; }
+    public bool DrillPoint { get; set; } = true;    // 118° tip, otherwise flat
+    public double CounterDiameter { get; set; } = 10;
+    public double CounterDepth { get; set; } = 4;
+    public double SinkAngle { get; set; } = 90;
+    public override string Command => "hole";
+
+    public static readonly string[] Types = { "simple", "counterbore", "countersink" };
+    public static string TypeName(string t) => t switch { "counterbore" => "카운터보어", "countersink" => "카운터싱크", _ => "단순" };
+}
+
+/// <summary>Split bodies by an origin plane (with offset) or by the planar face of a body.</summary>
+public sealed class SplitBodyFeature : Feature
+{
+    public List<string> Bodies { get; set; } = new();
+    public string Plane { get; set; } = "XY";        // XY, XZ, YZ or face
+    public double Offset { get; set; }
+    public string ToolBody { get; set; } = "";
+    public double[] ToolPick { get; set; } = Array.Empty<double>();
+    public override string Command => "splitbody";
+}
+
+/// <summary>Draft (taper) faces of a body about a planar fixed face, pulling along its normal.</summary>
+public sealed class DraftFeature : Feature
+{
+    public string Body { get; set; } = "";
+    public double[] Neutral { get; set; } = Array.Empty<double>();
+    public List<double[]> Faces { get; set; } = new();
+    public double Angle { get; set; } = 3;
+    public bool Flip { get; set; }
+    public override string Command => "draft";
+}
+
+/// <summary>Helical coil with a circular section about a vertical axis.</summary>
+public sealed class CoilFeature : Feature
+{
+    public double X { get; set; }
+    public double Y { get; set; }
+    public double Z { get; set; }
+    public double Diameter { get; set; } = 20;
+    public double Pitch { get; set; } = 6;
+    public double Turns { get; set; } = 5;
+    public double Section { get; set; } = 2;
+    public BodyOp Operation { get; set; } = BodyOp.NewBody;
+    public List<string> Targets { get; set; } = new();
+    public override string Command => "coil";
+}
+
+/// <summary>Round pipe swept along sketch curves.</summary>
+public sealed class PipeFeature : Feature
+{
+    public List<ChainRef> Chains { get; set; } = new();
+    public double Diameter { get; set; } = 5;
+    public bool Hollow { get; set; }
+    public double Thickness { get; set; } = 1;
+    public BodyOp Operation { get; set; } = BodyOp.NewBody;
+    public List<string> Targets { get; set; } = new();
+    public override string Command => "pipe";
+}
+
+/// <summary>Sew surface bodies together; a closed result becomes a solid.</summary>
+public sealed class StitchFeature : Feature
+{
+    public List<string> Bodies { get; set; } = new();
+    public double Tolerance { get; set; } = 0.01;
+    public override string Command => "stitch";
 }
 
 public sealed class ThickenFeature : Feature
@@ -632,6 +721,52 @@ public sealed class BossFeature : Feature
     public double HoleDiameter { get; set; } = 3;
     public double Height { get; set; } = 10;
     public override string Command => "boss";
+}
+
+/// <summary>Render workspace scene: environment, sun, ground and exposure.</summary>
+public sealed class RenderScene
+{
+    public string Environment { get; set; } = "studio";   // studio, outdoor, dark, sunset
+    public double SunAzimuth { get; set; } = -50;          // degrees from +X towards +Y
+    public double SunElevation { get; set; } = 55;
+    public double Exposure { get; set; }                   // EV
+    public bool GroundShadow { get; set; } = true;
+    public double GroundReflection { get; set; }
+    public bool SolidBackdrop { get; set; }
+    public string BackdropColor { get; set; } = "#FFFFFF";
+
+    public static readonly string[] Environments = { "studio", "outdoor", "dark", "sunset" };
+
+    public static string EnvironmentName(string e) => e switch
+    {
+        "outdoor" => "야외 - 맑음",
+        "dark" => "어두운 스튜디오",
+        "sunset" => "해질녘",
+        _ => "밝은 스튜디오",
+    };
+
+    /// <summary>The 25 environment numbers of osc_raytrace for a ground at height <paramref name="groundZ"/>.</summary>
+    public double[] ToArray(double groundZ)
+    {
+        double[] top, horizon, ground, sun;
+        double radius, boxes = 0;
+        switch (Environment)
+        {
+            case "outdoor": top = new[] { 0.22, 0.42, 0.85 }; horizon = new[] { 0.75, 0.82, 0.92 }; ground = new[] { 0.62, 0.6, 0.56 }; sun = new[] { 2.4, 2.25, 2.0 }; radius = 0.8; break;
+            case "dark": top = new[] { 0.04, 0.04, 0.05 }; horizon = new[] { 0.1, 0.1, 0.11 }; ground = new[] { 0.22, 0.22, 0.23 }; sun = new[] { 1.9, 1.9, 1.9 }; radius = 10; boxes = 2.5; break;
+            case "sunset": top = new[] { 0.18, 0.22, 0.42 }; horizon = new[] { 0.95, 0.58, 0.32 }; ground = new[] { 0.45, 0.4, 0.36 }; sun = new[] { 2.2, 1.25, 0.6 }; radius = 1.2; break;
+            default: top = new[] { 0.62, 0.64, 0.68 }; horizon = new[] { 0.42, 0.42, 0.44 }; ground = new[] { 0.88, 0.88, 0.88 }; sun = new[] { 1.15, 1.12, 1.08 }; radius = 9; boxes = 2.2; break;
+        }
+        double az = SunAzimuth * Math.PI / 180, el = Math.Clamp(SunElevation, 1, 90) * Math.PI / 180;
+        var bd = Avalonia.Media.Color.Parse(BackdropColor);
+        return new[]
+        {
+            top[0], top[1], top[2], horizon[0], horizon[1], horizon[2], ground[0], ground[1], ground[2],
+            Math.Cos(el) * Math.Cos(az), Math.Cos(el) * Math.Sin(az), Math.Sin(el), sun[0], sun[1], sun[2], radius,
+            groundZ, GroundShadow ? 1 : 0, Math.Clamp(GroundReflection, 0, 1), SolidBackdrop ? 1 : 0,
+            Math.Pow(bd.R / 255.0, 2.2), Math.Pow(bd.G / 255.0, 2.2), Math.Pow(bd.B / 255.0, 2.2), Math.Pow(2, Exposure), boxes,
+        };
+    }
 }
 
 public sealed class UserParameter
@@ -757,8 +892,48 @@ public sealed class Doc
     public double SheetThickness { get; set; } = 1;
     public double SheetBendRadius { get; set; } = 1;
     public Dictionary<string, string> BodyColors { get; set; } = new();
+    /// <summary>Physical material per body (name from <see cref="Materials"/>); bodies without one are steel.</summary>
+    public Dictionary<string, string> BodyMaterials { get; set; } = new();
+
+    /// <summary>Physical materials and their density in g/cm³.</summary>
+    public static readonly (string name, double density)[] Materials =
+    {
+        ("강철", 7.85), ("스테인리스강", 8.00), ("알루미늄 6061", 2.70), ("황동", 8.47), ("구리", 8.96), ("티타늄", 4.51),
+        ("ABS 플라스틱", 1.05), ("PLA", 1.24), ("나일론 6/6", 1.14), ("폴리카보네이트", 1.20), ("고무", 1.10), ("목재 (참나무)", 0.75),
+    };
+
+    public double Density(string body) =>
+        Materials.FirstOrDefault(m => m.name == BodyMaterials.GetValueOrDefault(body, "강철")) is { name: not null } m ? m.density : 7.85;
     public HashSet<string> HiddenBodies { get; set; } = new();
     public bool OriginVisible { get; set; }
+    /// <summary>Appearance (render material) name per body; see <see cref="AppearanceLibrary"/>.</summary>
+    public Dictionary<string, string> BodyAppearances { get; set; } = new();
+    /// <summary>Scene settings of the render workspace.</summary>
+    public RenderScene Render { get; set; } = new();
+
+    /// <summary>Appearances: display colour plus path-tracing material (metallic, roughness).</summary>
+    public static readonly (string name, string hex, double metallic, double roughness)[] AppearanceLibrary =
+    {
+        ("강철 - 새틴", "#D6D2CC", 1, 0.38), ("알루미늄", "#C9CED4", 1, 0.3), ("황동", "#C8A951", 1, 0.25), ("구리", "#B87333", 1, 0.25),
+        ("크롬 - 광택", "#E6E8EA", 1, 0.04), ("플라스틱 - 흰색", "#F2F2F2", 0, 0.32), ("플라스틱 - 검은색", "#2E2E2E", 0, 0.32), ("플라스틱 - 빨간색", "#D9342B", 0, 0.3),
+        ("플라스틱 - 파란색", "#2F6FD6", 0, 0.3), ("플라스틱 - 초록색", "#2DA44E", 0, 0.3), ("플라스틱 - 노란색", "#F2C230", 0, 0.3), ("플라스틱 - 주황색", "#F07C21", 0, 0.3),
+        ("고무", "#3A3A3A", 0, 0.9), ("도장 - 광택 검정", "#141414", 0, 0.08), ("목재 - 참나무", "#B08655", 0, 0.7), ("세라믹 - 흰색", "#F4F1EA", 0, 0.12),
+    };
+
+    /// <summary>Render material of a body: its appearance, or a material matching its colour.</summary>
+    public (string hex, double metallic, double roughness) MaterialOf(string body)
+    {
+        if (BodyAppearances.TryGetValue(body, out var name) && AppearanceLibrary.FirstOrDefault(a => a.name == name) is { name: not null } a)
+            return (BodyColors.GetValueOrDefault(body, a.hex), a.metallic, a.roughness);
+        var hex = BodyColors.GetValueOrDefault(body, "#D6D2CC");
+        var byColor = AppearanceLibrary.FirstOrDefault(x => string.Equals(x.hex, hex, StringComparison.OrdinalIgnoreCase));
+        return byColor.name != null ? (hex, byColor.metallic, byColor.roughness) : (hex, 0, 0.4);
+    }
+
+    /// <summary>Drawings of this design (도면 작업공간).</summary>
+    public List<DrawingDoc> Drawings { get; set; } = new();
+    /// <summary>Milling setup, tools and operations (제조 작업공간).</summary>
+    public CamDoc Cam { get; set; } = new();
 
     public string Save() => JsonSerializer.Serialize(this, Json);
     public static Doc Load(string json) => JsonSerializer.Deserialize<Doc>(json, Json) ?? new Doc();
@@ -797,6 +972,15 @@ public sealed class Doc
         ["edgeflange"] = "모서리 플랜지",
         ["rib"] = "리브",
         ["boss"] = "보스",
+        ["hole"] = "구멍",
+        ["splitbody"] = "본체 분할",
+        ["draft"] = "기울기",
+        ["coil"] = "코일",
+        ["pipe"] = "파이프",
+        ["stitch"] = "스티치",
+        ["surfrevolve"] = "회전",
+        ["surfsweep"] = "스윕",
+        ["surfloft"] = "로프트",
     };
 
     /// <summary>Next free default name for a feature of this command ("돌출1", "돌출2" ...).</summary>
@@ -1109,9 +1293,18 @@ public static class Evaluator
                 break;
             }
 
+            case SurfaceFeature sf when sf.Kind == "loft":
+            {
+                if (sf.Chains.Count < 2) throw new InvalidOperationException("곡선을 두 개 이상 선택하세요.");
+                var sections = sf.Chains.Select(cr => { var (sk, chain) = ChainOf(s, cr); return (sk.Frame, (IReadOnlyList<Piece>)chain.Pieces); }).ToList();
+                s.Bodies.Add(new Body { Id = f.Id + ":0", Solid = Solid.SurfaceLoft(sections) });
+                break;
+            }
+
             case SurfaceFeature sf:
             {
                 if (sf.Chains.Count == 0) throw new InvalidOperationException("곡선을 선택하세요.");
+                if (sf.Kind == "sweep" && sf.Path.Count == 0) throw new InvalidOperationException("경로를 선택하세요.");
                 int k = 0;
                 foreach (var cr in sf.Chains)
                 {
@@ -1122,9 +1315,110 @@ public static class Evaluator
                         if (!chain.Closed) throw new InvalidOperationException("패치에는 닫힌 곡선이 필요합니다.");
                         surface = Solid.Patch(sk.Frame, chain.Pieces);
                     }
+                    else if (sf.Kind == "revolve")
+                    {
+                        (P2 a, P2 d) = sf.Axis switch { 0 => (new P2(0, 0), new P2(1, 0)), 1 => (new P2(0, 0), new P2(0, 1)), _ => LineAxis(sk, sf.Axis - 2) };
+                        surface = Solid.SurfaceRevolve(sk.Frame, chain.Pieces, a, d, sf.Angle);
+                    }
+                    else if (sf.Kind == "sweep")
+                    {
+                        var (psk, path) = ChainOf(s, sf.Path[0]);
+                        surface = Solid.SurfaceSweep(sk.Frame, chain.Pieces, psk.Frame, path.Pieces);
+                    }
                     else surface = Solid.SurfaceExtrude(sk.Frame, chain.Pieces, Math.Min(0, sf.Distance), Math.Max(0, sf.Distance));
                     s.Bodies.Add(new Body { Id = $"{f.Id}:{k++}", Solid = surface });
                 }
+                break;
+            }
+
+            case HoleFeature ho:
+            {
+                var body = s.Find(ho.Body) ?? throw new InvalidOperationException("구멍을 놓을 면을 선택하세요.");
+                if (ho.Points.Count == 0) throw new InvalidOperationException("구멍을 놓을 면을 선택하세요.");
+                if (ho.Diameter <= 0) throw new InvalidOperationException("지름은 0보다 커야 합니다.");
+                var result = body.Solid;
+                foreach (var pt in ho.Points)
+                {
+                    var pick = new V3(pt[0], pt[1], pt[2]);
+                    var frame = body.Solid.FaceFrame(pick) ?? throw new InvalidOperationException("평면인 면을 선택하세요.");
+                    var info = body.Solid.Info;
+                    double depth = ho.ThroughAll ? (info.Max - info.Min).Length + 2 : ho.Depth;
+                    if (depth <= 0) throw new InvalidOperationException("깊이는 0보다 커야 합니다.");
+                    result = result.Boolean(HoleTool(ho, frame, frame.At(frame.Project(pick)), depth), BoolOp.Subtract);
+                }
+                Replace(s, body, result);
+                break;
+            }
+
+            case SplitBodyFeature sp:
+            {
+                var bodies = Pick(s, sp.Bodies);
+                V3 o, n;
+                if (sp.Plane == "face")
+                {
+                    var tool = s.Find(sp.ToolBody) ?? throw new InvalidOperationException("분할 도구 면을 선택하세요.");
+                    if (sp.ToolPick.Length != 3) throw new InvalidOperationException("분할 도구 면을 선택하세요.");
+                    var fr = tool.Solid.FaceFrame(new V3(sp.ToolPick[0], sp.ToolPick[1], sp.ToolPick[2])) ?? throw new InvalidOperationException("평면인 면을 선택하세요.");
+                    (o, n) = (fr.O + fr.N * sp.Offset, fr.N);
+                }
+                else
+                {
+                    var fr = PlaneFrame.Of(sp.Plane, sp.Offset);
+                    (o, n) = (fr.O, fr.N);
+                }
+                foreach (var b in bodies)
+                {
+                    var parts = b.Solid.Split(o, n);
+                    if (parts.Count == 0) throw new InvalidOperationException("본체를 분할할 수 없습니다.");
+                    Replace(s, b, parts[0]);
+                    int idx = s.Bodies.FindIndex(x => x.Id == b.Id);
+                    for (int k = 1; k < parts.Count; k++) s.Bodies.Insert(idx + k, new Body { Id = $"{f.Id}:{b.Id}:{k}", Solid = parts[k] });
+                }
+                break;
+            }
+
+            case DraftFeature dr:
+            {
+                var body = s.Find(dr.Body) ?? throw new InvalidOperationException("고정 평면을 선택하세요.");
+                if (dr.Neutral.Length != 3) throw new InvalidOperationException("고정 평면을 선택하세요.");
+                if (dr.Faces.Count == 0) throw new InvalidOperationException("기울기를 줄 면을 선택하세요.");
+                var pts = dr.Faces.Select(e => new V3(e[0], e[1], e[2])).ToList();
+                Replace(s, body, body.Solid.Draft(pts, new V3(dr.Neutral[0], dr.Neutral[1], dr.Neutral[2]), dr.Flip ? dr.Angle : -dr.Angle));   // positive narrows the part towards the pull direction
+                break;
+            }
+
+            case CoilFeature co:
+            {
+                if (co.Diameter <= 0 || co.Section <= 0 || co.Turns <= 0) throw new InvalidOperationException("지름, 단면 크기와 회전수는 0보다 커야 합니다.");
+                if (co.Pitch < co.Section * 1.0001) throw new InvalidOperationException("피치는 단면 크기보다 커야 합니다 (코일이 스스로 겹칩니다).");
+                if (co.Section >= co.Diameter / 2) throw new InvalidOperationException("단면 크기가 코일 지름에 비해 너무 큽니다.");
+                Combine(s, f.Id, Solid.Coil(new V3(co.X, co.Y, co.Z), co.Diameter / 2, co.Pitch, co.Turns, co.Section / 2), co.Operation, co.Targets);
+                break;
+            }
+
+            case PipeFeature pi:
+            {
+                if (pi.Chains.Count == 0) throw new InvalidOperationException("경로를 선택하세요.");
+                if (pi.Diameter <= 0) throw new InvalidOperationException("지름은 0보다 커야 합니다.");
+                if (pi.Hollow && pi.Thickness * 2 >= pi.Diameter) throw new InvalidOperationException("벽 두께가 지름의 절반보다 작아야 합니다.");
+                Solid? tool = null;
+                foreach (var cr in pi.Chains)
+                {
+                    var (sk, chain) = ChainOf(s, cr);
+                    var part = Solid.Pipe(sk.Frame, chain.Pieces, pi.Diameter / 2, pi.Hollow ? pi.Diameter / 2 - pi.Thickness : 0);
+                    tool = tool == null ? part : tool.Boolean(part, BoolOp.Union);
+                }
+                Combine(s, f.Id, tool!, pi.Operation, pi.Targets);
+                break;
+            }
+
+            case StitchFeature st:
+            {
+                var bodies = Pick(s, st.Bodies);
+                if (bodies.Count < 1) throw new InvalidOperationException("곡면 본체를 선택하세요.");
+                var sewn = Solid.Sew(bodies.Select(b => b.Solid).ToList(), Math.Max(1e-6, st.Tolerance));
+                Replace(s, bodies[0], sewn);
+                s.Bodies.RemoveAll(b => bodies.Skip(1).Any(x => x.Id == b.Id));
                 break;
             }
 
@@ -1291,6 +1585,41 @@ public static class Evaluator
     }
 
     private static double Pos(double v) => Math.Max(1e-3, Math.Abs(v));
+
+    /// <summary>Revolved cutting tool of a hole whose top centre is <paramref name="c"/> on the face of <paramref name="face"/>.</summary>
+    public static Solid HoleTool(HoleFeature h, PlaneFrame face, V3 c, double depth)
+    {
+        // half profile in a plane through the axis: x = radius, y = depth into the part
+        var plane = new PlaneFrame(c, face.U, -face.N, face.U.Cross(-face.N));
+        double r = h.Diameter / 2, e = Math.Max(0.5, h.Diameter * 0.1);   // start a little above the face
+        var pts = new List<P2> { new(0, -e) };
+        switch (h.Type)
+        {
+            case "counterbore":
+            {
+                double rc = Math.Max(h.CounterDiameter / 2, r + 1e-3), dc = Math.Clamp(h.CounterDepth, 1e-3, depth - 1e-3);
+                pts.AddRange(new P2[] { new(rc, -e), new(rc, dc), new(r, dc) });
+                break;
+            }
+            case "countersink":
+            {
+                double rs = Math.Max(h.CounterDiameter / 2, r + 1e-3);
+                double ds = (rs - r) / Math.Tan(Math.Clamp(h.SinkAngle, 10, 170) * Math.PI / 360);
+                pts.AddRange(new P2[] { new(rs + e * (rs - r) / Math.Max(ds, 1e-9), -e), new(r, Math.Min(ds, depth - 1e-3)) });
+                break;
+            }
+            default:
+                pts.Add(new P2(r, -e));
+                break;
+        }
+        pts.Add(new P2(r, depth));
+        if (h.DrillPoint && !h.ThroughAll) pts.Add(new P2(0, depth + r / Math.Tan(59 * Math.PI / 180)));
+        else pts.Add(new P2(0, depth));
+        var pieces = pts.Select((a, i) => { var b = pts[(i + 1) % pts.Count]; return new Piece(0, new[] { a.X, a.Y, b.X, b.Y }); })
+            .Where(pc => Math.Abs(pc.P[0] - pc.P[2]) + Math.Abs(pc.P[1] - pc.P[3]) > 1e-9).ToList();
+        var profile = new Profile(0, pts, 1, new List<int>(), pieces);
+        return Solid.Revolve(plane, new[] { profile }, new P2(0, 0), new P2(0, 1), 360);
+    }
 
     private static Profile CircleProfile(P2 c, double r) =>
         new(0, Enumerable.Range(0, 32).Select(i => new P2(c.X + r * Math.Cos(i * Math.PI / 16), c.Y + r * Math.Sin(i * Math.PI / 16))).ToList(), Math.PI * r * r, new List<int>(), new List<Piece> { new(2, new[] { c.X, c.Y, r }) });

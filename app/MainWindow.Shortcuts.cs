@@ -78,6 +78,16 @@ public sealed partial class MainWindow
             }
             return false;
         }
+        if (_workspace == "drawing")
+        {
+            // Fusion drawing shortcuts: D dimension, T text
+            switch (e.Key)
+            {
+                case Key.D when !alt: RunCommand("dwg_dim"); return true;
+                case Key.T when !alt: RunCommand("dwg_text"); return true;
+            }
+            return false;
+        }
         if (alt || shift) return false;
         switch (e.Key)
         {
@@ -103,6 +113,8 @@ public sealed partial class MainWindow
             return true;
         }
         if (_cmd != null || !ModelKeys.TryGetValue(e.Key, out var cmd)) return false;
+        // modelling shortcuts belong to the design workspace (measure works everywhere)
+        if (_workspace != "design" && cmd != "measure") return false;
         RunCommand(cmd);
         // outside a sketch L/R/C first ask for a plane, then start that tool (Fusion does the same)
         if (cmd == "sketch") _pendingSketchTool = e.Key switch { Key.L => "line", Key.R => "rect", _ => "circle" };

@@ -71,12 +71,15 @@ public sealed partial class MainWindow : Window
         View.Hovered += OnCanvasHover;
         View.DoubleClicked += OnCanvasDoubleClick;
         View.RightClicked += OnCanvasRightClick;
+        View.RayMaterials = RayMaterials;
+        View.RayEnvironment = RayEnvironment;
 
         var root = new DockPanel();
         var top = new StackPanel { Children = { BuildAppBar(), BuildToolbar() } };
         DockPanel.SetDock(top, Dock.Top);
         root.Children.Add(top);
         var timeline = BuildTimeline();
+        _timelineBar = timeline;
         DockPanel.SetDock(timeline, Dock.Bottom);
         root.Children.Add(timeline);
 
@@ -87,13 +90,16 @@ public sealed partial class MainWindow : Window
         _canvasLayer.Children.Add(BuildComments());
         _canvasLayer.Children.Add(BuildNavBar());
         _canvasLayer.Children.Add(cube);
-        _canvasLayer.Children.Add(_promptBox);
-        _canvasLayer.Children.Add(_dialogHost);
+        // the 3D canvas and the drawing sheet share the work area; prompts and dialogs float above both
+        _workArea.Children.Add(_canvasLayer);
+        _workArea.Children.Add(BuildDrawingLayer());
+        _workArea.Children.Add(_promptBox);
+        _workArea.Children.Add(_dialogHost);
         var center = new Grid { ColumnDefinitions = new ColumnDefinitions("Auto,*") };
         _dataPanel.IsVisible = false;
         center.Children.Add(_dataPanel);
-        Grid.SetColumn(_canvasLayer, 1);
-        center.Children.Add(_canvasLayer);
+        Grid.SetColumn(_workArea, 1);
+        center.Children.Add(_workArea);
         root.Children.Add(center);
         Content = root;
 
@@ -147,6 +153,8 @@ public sealed partial class MainWindow : Window
         RebuildBrowser();
         RebuildTimeline();
         UpdateTitle();
+        if (_workspace == "drawing") RefreshDrawing();
+        if (_workspace == "manufacture") RefreshManufacture();
     }
 
     private void UpdateItems()
@@ -159,10 +167,12 @@ public sealed partial class MainWindow : Window
             if (_doc.HiddenBodies.Contains(b.Id)) continue;
             var col = _doc.BodyColors.TryGetValue(b.Id, out var hex) ? Color.Parse(hex) : DefaultBody;
             uint flags = _selBodies.Contains(b.Id) && _sk == null ? Viewport.Selected : 0;
+            if (_interference.Count > 0) flags |= Viewport.Ghost;   // let the red overlap show through
             var shown = _flatView is { } fv && fv.body == b.Id ? fv.flat : b.Solid;
             items.Add(new RenderItem(_section != null ? SectionOf(shown) : shown, col, flags));
             _itemBodies.Add(b.Id);
         }
+        foreach (var common in _interference) items.Add(new RenderItem(common, InterferenceColor, 0));
         View.Items = items;
         View.Invalidate3D();
     }
@@ -335,10 +345,11 @@ public sealed partial class MainWindow : Window
             {
                 Orientation = Orientation.Horizontal,
                 Spacing = 4,
-                Children = { Ui.Label("디자인", 14, Ui.Text, FontWeight.SemiBold), Icons.Line("chevdown", 10) },
+                Children = { _wsLabel, Icons.Line("chevdown", 10) },
             }),
         }.Init();
-        ToolTip.SetTip(ws, "작업공간: 디자인");
+        ToolTip.SetTip(ws, "작업공간 변경");
+        ws.Click += () => WorkspaceMenu().ShowAt(ws);
         var right = new DockPanel();
         DockPanel.SetDock(_tabsRow, Dock.Top);
         _tabsRow.Margin = new Thickness(18, 6, 0, 0);
@@ -353,10 +364,16 @@ public sealed partial class MainWindow : Window
     private void BuildTabs()
     {
         _tabsRow.Children.Clear();
-        var tabs = new List<(string id, string label, bool enabled)>
+        var tabs = _workspace switch
         {
-            ("solid", "솔리드", true), ("surface", "곡면", true), ("mesh", "메쉬", true), ("sheet", "판금", true),
-            ("plastic", "플라스틱", true), ("manage", "매니지", true), ("utilities", "유틸리티", true),
+            "render" => new List<(string id, string label, bool enabled)> { ("render", "렌더", true) },
+            "drawing" => new List<(string id, string label, bool enabled)> { ("drawing", "도면", true) },
+            "manufacture" => new List<(string id, string label, bool enabled)> { ("milling", "밀링", true), ("camutil", "유틸리티", true) },
+            _ => new List<(string id, string label, bool enabled)>
+            {
+                ("solid", "솔리드", true), ("surface", "곡면", true), ("mesh", "메쉬", true), ("sheet", "판금", true),
+                ("plastic", "플라스틱", true), ("manage", "매니지", true), ("utilities", "유틸리티", true),
+            },
         };
         if (_sk != null) tabs.Add(("sketch", "스케치", true));
         foreach (var (id, label, enabled) in tabs)
@@ -484,12 +501,36 @@ public sealed partial class MainWindow : Window
         ["offset"] = "간격띄우기",
         ["c_collinear"] = "동일선상",
         ["c_smooth"] = "부드럽게(G2)",
+        ["dwg_base"] = "기준 뷰",
+        ["dwg_projected"] = "투영 뷰",
+        ["dwg_delete"] = "삭제",
+        ["dwg_centermark"] = "중심 표시 켜기/끄기",
+        ["dwg_dim"] = "치수",
+        ["dwg_aligned"] = "정렬 치수",
+        ["dwg_dia"] = "지름 치수",
+        ["dwg_text"] = "텍스트",
+        ["dwg_sheet"] = "시트 설정 및 제목 블록",
+        ["dwg_pdf"] = "PDF 출력",
+        ["dwg_dxf"] = "DXF 출력",
+        ["dwg_svg"] = "SVG 출력",
+        ["physmaterial"] = "물리 재질",
+        ["scenesettings"] = "장면 설정",
+        ["renderimage"] = "렌더링",
+        ["incanvas"] = "캔버스 내 렌더 켜기/끄기",
+        ["cam_setup"] = "설정",
+        ["cam_face"] = "페이스",
+        ["cam_pocket"] = "2D 포켓",
+        ["cam_contour"] = "2D 윤곽",
+        ["cam_drill"] = "드릴",
+        ["cam_simulate"] = "시뮬레이션",
+        ["cam_post"] = "포스트 처리 (G코드)",
+        ["cam_tools"] = "공구 라이브러리",
     };
 
     private static readonly HashSet<string> Unsupported = new()
     {
-        "hole", "form", "automodel", "web", "thread", "coil", "pipe", "draft", "splitbody", "insertcomponent", "configmode", "configtable", "configrules",
-        "interference", "centerofmass", "derive", "canvas", "decal", "surfrevolve", "surfsweep", "surfloft", "stitch", "unstitch", "surftrim",
+        "form", "automodel", "web", "thread", "insertcomponent", "configmode", "configtable", "configrules",
+        "derive", "canvas", "decal", "unstitch", "surftrim",
         "extend", "plasticrule", "snapfit", "lip", "rest", "meshcreate", "spline", "sketchmirror", "sketchfillet", "offset", "c_collinear", "c_smooth",
     };
 
@@ -585,6 +626,38 @@ public sealed partial class MainWindow : Window
             foreach (var c in row.Children.OfType<StackPanel>())
                 foreach (var b in c.Children.OfType<StackPanel>().SelectMany(s => s.Children.OfType<FlatButton>()))
                     b.IsSelected = false;
+        }
+        else if (_tab == "drawing")
+        {
+            Add("작성", new[] { "dwg_base", "dwg_projected" }, new[] { "dwg_base", "dwg_projected" });
+            Add("수정", new[] { "dwg_delete" }, new[] { "dwg_delete" });
+            Add("형상", new[] { "dwg_centermark" }, new[] { "dwg_centermark" });
+            Add("치수", new[] { "dwg_dim", "dwg_aligned", "dwg_dia" }, new[] { "dwg_dim", "dwg_aligned", "dwg_dia" });
+            Add("텍스트", new[] { "dwg_text" }, new[] { "dwg_text" });
+            Add("시트", new[] { "dwg_sheet" }, new[] { "dwg_sheet" });
+            Add("내보내기", new[] { "dwg_pdf", "dwg_dxf" }, new[] { "dwg_pdf", "dwg_dxf", "dwg_svg" });
+            Add("선택", new[] { "select" }, new[] { "select" });
+        }
+        else if (_tab == "render")
+        {
+            Add("설정", new[] { "appearance", "physmaterial", "scenesettings" }, new[] { "appearance", "physmaterial", "scenesettings" });
+            Add("캔버스 내 렌더", new[] { "incanvas" }, new[] { "incanvas" });
+            Add("렌더링", new[] { "renderimage" }, new[] { "renderimage" });
+            Add("선택", new[] { "select" }, new[] { "select" });
+        }
+        else if (_tab == "milling")
+        {
+            Add("설정", new[] { "cam_setup" }, new[] { "cam_setup" });
+            Add("2D", new[] { "cam_face", "cam_pocket", "cam_contour", "cam_drill" }, new[] { "cam_face", "cam_pocket", "cam_contour", "-", "cam_drill" });
+            Add("동작", new[] { "cam_simulate", "cam_post" }, new[] { "cam_simulate", "-", "cam_post" });
+            Add("공구", new[] { "cam_tools" }, new[] { "cam_tools" });
+            Add("검사", new[] { "measure" }, new[] { "measure", "section" });
+            Add("선택", new[] { "select" }, new[] { "select" });
+        }
+        else if (_tab == "camutil")
+        {
+            Add("동작", new[] { "cam_simulate", "cam_post" }, new[] { "cam_simulate", "cam_post" });
+            Add("공구", new[] { "cam_tools" }, new[] { "cam_tools" });
         }
         else if (_tab == "surface")
         {
@@ -712,6 +785,7 @@ public sealed partial class MainWindow : Window
     public void RebuildBrowser()
     {
         _browserRows.Children.Clear();
+        if (_workspace == "manufacture") AddCamBrowserRows();
         var name = _path != null ? Path.GetFileNameWithoutExtension(_path) : "(제목 없음)";
         _browserRows.Children.Add(BrowserRow(0, "root", true, null, Icons.Line("component", 16), name, true, false));
         if (!_expanded["root"]) return;
@@ -1171,9 +1245,10 @@ public sealed partial class MainWindow : Window
     private void ShowAbout()
     {
         var panel = new CommandPanel("정보", null, () => CloseDialog(), null);
-        panel.AddText("OpenShape CAD 1.3.1\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
+        panel.AddText("OpenShape CAD 1.4.0\n\nAutodesk Fusion의 화면 구성과 사용 흐름을 참고해 C#(Avalonia), Rust, OpenCASCADE(B-rep 형상 엔진), SolveSpace(구속조건 해석기)로 새로 만든 Ubuntu용 파라메트릭 CAD입니다. " +
                       "Autodesk의 코드나 리소스는 포함되어 있지 않으며 Autodesk와 관련이 없습니다. " +
                       "아이콘과 리소스는 모두 OpenShape가 직접 그린 것이며 Wine이나 Windows용 프로그램 없이 Ubuntu에서만 동작합니다.\n\n" +
+                      "작업공간: 디자인, 렌더(경로 추적), 도면(PDF·DXF), 제조(2.5축 밀링, G코드).\n" +
                       "IsaacSimLink(형상·로봇 보내기, 저장 시 자동 동기화)가 내장되어 있습니다.");
         panel.AddText(ShortcutHelp());
         var upd = new FlatButton { Height = 30, Normal = Ui.Brush("#EDEDED"), Child = Ui.Centered(Ui.Label("업데이트 확인 (OpenShape Client Downloader)", 12)) }.Init();

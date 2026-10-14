@@ -340,8 +340,15 @@ public sealed partial class MainWindow
         if (_cmd?.Draft is FilletFeature fl)
             foreach (var e in fl.Edges)
                 if (EdgeAt(fl.Body, new V3(e[0], e[1], e[2])) is { } line) Line(line, new Pen(new SolidColorBrush(Color.FromRgb(6, 150, 215)), 3.5));
-        if (_cmd?.Draft is ShellFeature sh)
-            foreach (var f in sh.Faces)
+        var facePicks = _cmd?.Draft switch
+        {
+            ShellFeature sh => sh.Faces,
+            HoleFeature ho => ho.Points,
+            DraftFeature dr => dr.Faces.Concat(dr.Neutral.Length == 3 ? new[] { dr.Neutral } : Array.Empty<double[]>()).ToList(),
+            _ => null,
+        };
+        if (facePicks != null)
+            foreach (var f in facePicks)
                 if (View.Project(new V3(f[0], f[1], f[2])) is { } s)
                     ctx.DrawEllipse(new SolidColorBrush(Color.FromRgb(6, 150, 215)), new Pen(Brushes.White, 1.5), s, 5, 5);
         if (_hoverEdge != null) Line(_hoverEdge, new Pen(new SolidColorBrush(Color.FromArgb(200, 90, 180, 255)), 3));
@@ -355,6 +362,8 @@ public sealed partial class MainWindow
             ctx.DrawEllipse(new SolidColorBrush(col), null, so, 3, 3);
         }
         foreach (var j in State.Joints) Joint(j.Origin, j.Axis, Color.FromRgb(60, 60, 60));
+        DrawInspectOverlay(ctx);
+        DrawCamOverlay(ctx);
         if (_cmd?.Draft is JointFeature jd && _cmd.Base is { } bs)
         {
             if (jd.PickA.Length == 3 && bs.Find(jd.BodyA)?.Solid.JointFrame(new V3(jd.PickA[0], jd.PickA[1], jd.PickA[2])) is { } fa) Joint(fa.origin, fa.axis, Color.FromRgb(6, 150, 215));
@@ -435,7 +444,7 @@ public sealed partial class MainWindow
             {
                 if (HitEdge(p) is { } he) CommandPickPoint(he.body, he.point);
             }
-            else if (_cmd.SelectKind == "face1")
+            else if (_cmd.SelectKind is "face1" or "neutral" or "toolface")
             {
                 var (fi, ft, face) = View.PickFace(p);
                 if (fi >= 0 && face > 0 && fi < _itemBodies.Count)
@@ -453,7 +462,16 @@ public sealed partial class MainWindow
                     CommandPickJoint(_itemBodies[fi], o + d * ft);
                 }
             }
-            else if (_cmd.SelectKind == "faces")
+            else if (_cmd.SelectKind == "camface")
+            {
+                var (fi, ft, face) = View.PickFace(p);
+                if (fi >= 0 && face > 0 && fi < _itemBodies.Count)
+                {
+                    var (o, d) = View.Ray(p);
+                    CamPickFace(_itemBodies[fi], o + d * ft);
+                }
+            }
+            else if (_cmd.SelectKind is "faces" or "holepts")
             {
                 var (fi, ft, face) = View.PickFace(p);
                 if (fi >= 0 && face > 0 && fi < _itemBodies.Count)

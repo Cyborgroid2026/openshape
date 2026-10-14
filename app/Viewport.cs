@@ -45,6 +45,94 @@ public sealed unsafe class Viewport : Control
         ClipToBounds = true;
         Focusable = true;
         Cursor = new Cursor(StandardCursorType.Arrow);
+        _rayTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
+        _rayTimer.Tick += (_, _) => RayStep();
+    }
+
+    // ------------------------------------------------------------ in-canvas path tracing
+
+    /// <summary>Material of each item for path tracing: r, g, b (linear), metallic, roughness.</summary>
+    public Func<IReadOnlyList<RenderItem>, float[]>? RayMaterials { get; set; }
+    /// <summary>The 25 environment numbers of osc_raytrace.</summary>
+    public Func<double[]>? RayEnvironment { get; set; }
+    public int RayMaxSamples { get; set; } = 256;
+    /// <summary>Samples per pixel accumulated so far for the current view.</summary>
+    public int RaySamples => _rayTotal;
+    public event Action? RayProgress;
+
+    private readonly DispatcherTimer _rayTimer;
+    private bool _rayOn, _rayRunning;
+    private float[]? _accum;
+    private int _rayTotal, _rayW, _rayH;
+    private long _rayGen;
+    private DateTime _rayChanged = DateTime.MinValue;
+
+    /// <summary>In-canvas render: the view refines into a path-traced image while the camera rests.</summary>
+    public bool RayTrace
+    {
+        get => _rayOn;
+        set
+        {
+            if (_rayOn == value) return;
+            _rayOn = value;
+            ResetRay();
+            if (value) _rayTimer.Start();
+            else { _rayTimer.Stop(); _dirty = true; InvalidateVisual(); }
+        }
+    }
+
+    /// <summary>Start the path-traced image again (camera, model or materials changed).</summary>
+    public void ResetRay()
+    {
+        _rayGen++;
+        _rayTotal = 0;
+        _accum = null;
+        _rayChanged = DateTime.UtcNow;
+    }
+
+    /// <summary>Run one pass (one sample per pixel) in the background when the view has been still briefly.</summary>
+    public void RayStep()
+    {
+        if (!_rayOn || _rayRunning || _rayTotal >= RayMaxSamples || RayMaterials == null || RayEnvironment == null) return;
+        if ((DateTime.UtcNow - _rayChanged).TotalMilliseconds < 250) return;
+        int w = Math.Max(1, (int)Bounds.Width), h = Math.Max(1, (int)Bounds.Height);
+        if (_accum == null || _rayW != w || _rayH != h)
+        {
+            _accum = new float[w * h * 3];
+            _rayW = w;
+            _rayH = h;
+            _rayTotal = 0;
+        }
+        var items = Items;
+        var handles = items.Select(i => i.Solid.Handle).ToArray();
+        var mats = RayMaterials(items);
+        var env = RayEnvironment();
+        var cam = Cam.ToArray(w, h);
+        var accum = _accum;
+        long gen = _rayGen;
+        int total = _rayTotal + 1;
+        var buf = new byte[w * h * 4];
+        _rayRunning = true;
+        Task.Run(() =>
+        {
+            fixed (uint* ph = handles)
+            fixed (float* pm = mats, pa = accum)
+            fixed (double* pc = cam, pe = env)
+            fixed (byte* pb = buf)
+                Native.osc_raytrace(ph, pm, handles.Length, pc, w, h, pe, 1, (ulong)(gen * 7919 + total), pa, total, pb);
+            GC.KeepAlive(items);
+        }).ContinueWith(_ => Dispatcher.UIThread.Post(() =>
+        {
+            _rayRunning = false;
+            if (gen != _rayGen || !_rayOn || _bmp == null || _bmp.PixelSize.Width != w || _bmp.PixelSize.Height != h) return;
+            _rayTotal = total;
+            using (var fb = _bmp.Lock())
+                fixed (byte* pb = buf)
+                    for (int y = 0; y < h; y++)
+                        Buffer.MemoryCopy(pb + y * w * 4, (byte*)fb.Address + y * fb.RowBytes, fb.RowBytes, w * 4);
+            InvalidateVisual();
+            RayProgress?.Invoke();
+        }));
     }
 
     public double GridStep
@@ -60,6 +148,7 @@ public sealed unsafe class Viewport : Control
     public void Invalidate3D()
     {
         _dirty = true;
+        if (_rayOn) ResetRay();
         if (_queued) return;
         _queued = true;
         Dispatcher.UIThread.Post(() =>
@@ -103,7 +192,7 @@ public sealed unsafe class Viewport : Control
         fixed (double* pcam = cam)
         fixed (byte* pb = buf)
         {
-            Native.osc_render(ph, pc, pf, n, pcam, w, h, pb, (ShowGrid ? 1u : 0u) | (ShowEdges ? 2u : 0u), GridStep);
+            Native.osc_render(ph, pc, pf, n, pcam, w, h, pb, (ShowGrid && !_rayOn ? 1u : 0u) | (ShowEdges && !_rayOn ? 2u : 0u), GridStep);
             for (int y = 0; y < h; y++)
                 Buffer.MemoryCopy(pb + y * w * 4, (byte*)fb.Address + y * fb.RowBytes, fb.RowBytes, w * 4);
         }
@@ -147,6 +236,14 @@ public sealed unsafe class Viewport : Control
     {
         if (_dirty) EnsureRendered();
         if (_bmp != null) ctx.DrawImage(_bmp, new Rect(_bmp.Size));
+        if (_rayOn)
+        {
+            var label = new FormattedText(_rayTotal >= RayMaxSamples ? $"캔버스 내 렌더: 완료 ({_rayTotal}회 반복)" : $"캔버스 내 렌더: {_rayTotal}/{RayMaxSamples}회 반복",
+                System.Globalization.CultureInfo.CurrentCulture, FlowDirection.LeftToRight, new Typeface("Noto Sans CJK KR, sans-serif"), 12, Brushes.White);
+            var at = new Point(Bounds.Width - label.Width - 18, Bounds.Height - 62);
+            ctx.FillRectangle(new SolidColorBrush(Color.FromArgb(150, 0, 0, 0)), new Rect(at.X - 8, at.Y - 4, label.Width + 16, label.Height + 8), 3);
+            ctx.DrawText(label, at);
+        }
         DrawOverlay?.Invoke(ctx);
     }
 

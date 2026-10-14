@@ -17,12 +17,7 @@ public sealed partial class MainWindow
     private static readonly string[] OpNames = { "접합", "잘라내기", "교차", "새 본체" };
     private static readonly BodyOp[] OpOrder = { BodyOp.Join, BodyOp.Cut, BodyOp.Intersect, BodyOp.NewBody };
 
-    private static readonly (string name, string hex)[] Appearances =
-    {
-        ("강철 - 새틴", "#D6D2CC"), ("알루미늄", "#C9CED4"), ("황동", "#C8A951"), ("구리", "#B87333"),
-        ("플라스틱 - 흰색", "#F2F2F2"), ("플라스틱 - 검은색", "#2E2E2E"), ("플라스틱 - 빨간색", "#D9342B"), ("플라스틱 - 파란색", "#2F6FD6"),
-        ("플라스틱 - 초록색", "#2DA44E"), ("플라스틱 - 노란색", "#F2C230"), ("플라스틱 - 주황색", "#F07C21"), ("고무", "#3A3A3A"),
-    };
+    private static IEnumerable<(string name, string hex)> Appearances => Doc.AppearanceLibrary.Select(a => (a.name, a.hex));
 
     // ------------------------------------------------------------ dialogs
 
@@ -37,6 +32,22 @@ public sealed partial class MainWindow
         if (Unsupported.Contains(id))
         {
             SetPrompt($"{ToolNames.GetValueOrDefault(id, id)}: 이 명령은 OpenShape CAD에서 아직 지원하지 않습니다.");
+            return;
+        }
+        if (id.StartsWith("dwg_") && _workspace != "drawing")
+        {
+            // e.g. picked from the command search in another workspace
+            SetWorkspace("drawing");
+            if (id == "dwg_base" && _cmd?.Id == "dwg_base") return;
+        }
+        if (_workspace == "drawing" && (id.StartsWith("dwg_") || id == "select"))
+        {
+            RunDrawingCommand(id);
+            return;
+        }
+        if (id.StartsWith("cam_"))
+        {
+            RunCamCommand(id);
             return;
         }
         if (_sk != null)
@@ -194,6 +205,35 @@ public sealed partial class MainWindow
             case "boss":
                 OpenCommand(new BossFeature { Name = _doc.NextName("boss") }, -1);
                 break;
+            case "hole":
+                OpenCommand(new HoleFeature { Name = _doc.NextName("hole") }, -1);
+                SetPrompt("구멍을 놓을 평면인 면 위의 점을 클릭하세요. 여러 점을 클릭하면 같은 구멍을 여러 개 만듭니다.");
+                break;
+            case "splitbody":
+                OpenCommand(new SplitBodyFeature { Name = _doc.NextName("splitbody"), Bodies = _selBodies.ToList() }, -1);
+                break;
+            case "draft":
+                OpenCommand(new DraftFeature { Name = _doc.NextName("draft") }, -1);
+                SetPrompt("고정 평면(당기는 방향의 기준이 되는 평면인 면)을 클릭한 뒤 기울기를 줄 면들을 클릭하세요.");
+                break;
+            case "coil":
+                OpenCommand(new CoilFeature { Name = _doc.NextName("coil"), Operation = BodyOp.NewBody }, -1);
+                break;
+            case "pipe":
+                OpenCommand(new PipeFeature { Name = _doc.NextName("pipe"), Operation = _state.Bodies.Count > 0 ? BodyOp.Join : BodyOp.NewBody }, -1);
+                break;
+            case "surfrevolve" or "surfsweep" or "surfloft":
+                OpenCommand(new SurfaceFeature { Name = _doc.NextName(id), Kind = id[4..] }, -1);
+                break;
+            case "stitch":
+                OpenCommand(new StitchFeature { Name = _doc.NextName("stitch"), Bodies = _selBodies.ToList() }, -1);
+                break;
+            case "interference":
+                ShowInterference();
+                break;
+            case "centerofmass":
+                ShowCenterOfMass();
+                break;
             case "section":
                 ShowSection();
                 break;
@@ -236,6 +276,19 @@ public sealed partial class MainWindow
             case "appearance":
                 ShowAppearance();
                 break;
+            case "physmaterial":
+                ShowCenterOfMass();
+                break;
+            case "scenesettings":
+                ShowSceneSettings();
+                break;
+            case "renderimage":
+                ShowRenderImage();
+                break;
+            case "incanvas":
+                View.RayTrace = !View.RayTrace;
+                SetPrompt(View.RayTrace ? "캔버스 내 렌더를 켰습니다." : "캔버스 내 렌더를 껐습니다.");
+                break;
             case "measure":
                 ShowMeasure();
                 break;
@@ -265,6 +318,8 @@ public sealed partial class MainWindow
         ScaleFeature s => s.Bodies,
         ThickenFeature t => t.Bodies,
         DeleteFeature d => d.Bodies,
+        SplitBodyFeature sp => sp.Bodies,
+        StitchFeature st => st.Bodies,
         _ => null,
     };
 
@@ -298,6 +353,10 @@ public sealed partial class MainWindow
             FlangeFeature { Edge: true } => "edge1",
             FlangeFeature => "profiles",
             ShellFeature => "faces",
+            HoleFeature => "holepts",
+            DraftFeature d => d.Neutral.Length == 3 ? "faces" : "neutral",
+            SurfaceFeature or PipeFeature => "chains",
+            CoilFeature => "",
             PrimitiveFeature => "",
             _ => "bodies",
         };
@@ -437,9 +496,97 @@ public sealed partial class MainWindow
                 p.AddCombo("생성", OpNames, OpIndex(sw.Operation), i => { sw.Operation = OpOrder[i]; Changed(); });
                 break;
 
+            case SurfaceFeature { Kind: "revolve" } sf:
+            {
+                Select("프로파일", "chains", sf.Chains.Count, "곡선", () => sf.Chains.Clear());
+                var axes = new List<string> { "스케치 X축", "스케치 Y축" };
+                var sketch = sf.Chains.Count > 0 ? c.Base!.Sketches.FirstOrDefault(s => s.Id == sf.Chains[0].Sketch) : null;
+                if (sketch != null) axes.AddRange(sketch.Entities.Where(e => e.Kind == "line").Select((_, i) => $"스케치 선 {i + 1}"));
+                p.AddCombo("축", axes.ToArray(), Math.Min(sf.Axis, axes.Count - 1), i => { sf.Axis = i; Changed(); });
+                p.AddNumber("각도", sf.Angle, "deg", v => sf.Angle = v, Changed, f, "Angle");
+                break;
+            }
+
+            case SurfaceFeature { Kind: "sweep" } sf:
+                Select("프로파일", "chains", sf.Chains.Count, "곡선", () => sf.Chains.Clear());
+                Select("경로", "path", sf.Path.Count, "경로", () => sf.Path.Clear());
+                break;
+
+            case SurfaceFeature { Kind: "loft" } sf:
+                Select("프로파일", "chains", sf.Chains.Count, "곡선", () => sf.Chains.Clear());
+                p.AddText("서로 다른 스케치의 곡선을 순서대로 클릭하세요. 열린 곡선과 닫힌 곡선을 섞을 수 없습니다.");
+                break;
+
             case SurfaceFeature sf:
                 Select(sf.Patch ? "경계" : "프로파일", "chains", sf.Chains.Count, "곡선", () => sf.Chains.Clear());
                 if (!sf.Patch) p.AddNumber("거리", sf.Distance, "mm", v => sf.Distance = v, Changed, f, "Distance");
+                break;
+
+            case HoleFeature ho:
+            {
+                Select("위치", "holepts", ho.Points.Count, "점", () => { ho.Points.Clear(); ho.Body = ""; });
+                var holeTypes = HoleFeature.Types;
+                p.AddCombo("구멍 유형", holeTypes.Select(HoleFeature.TypeName).ToArray(), Math.Max(0, Array.IndexOf(holeTypes, ho.Type)), i => { ho.Type = holeTypes[i]; BuildCommandPanel(); Changed(); });
+                p.AddCombo("범위", new[] { "거리", "전체 관통" }, ho.ThroughAll ? 1 : 0, i => { ho.ThroughAll = i == 1; BuildCommandPanel(); Changed(); });
+                p.AddNumber("지름", ho.Diameter, "mm", v => ho.Diameter = v, Changed, f, "Diameter");
+                if (!ho.ThroughAll) p.AddNumber("깊이", ho.Depth, "mm", v => ho.Depth = v, Changed, f, "Depth");
+                if (ho.Type == "counterbore")
+                {
+                    p.AddNumber("카운터보어 지름", ho.CounterDiameter, "mm", v => ho.CounterDiameter = v, Changed, f, "CounterDiameter");
+                    p.AddNumber("카운터보어 깊이", ho.CounterDepth, "mm", v => ho.CounterDepth = v, Changed, f, "CounterDepth");
+                }
+                if (ho.Type == "countersink")
+                {
+                    p.AddNumber("카운터싱크 지름", ho.CounterDiameter, "mm", v => ho.CounterDiameter = v, Changed, f, "CounterDiameter");
+                    p.AddNumber("카운터싱크 각도", ho.SinkAngle, "deg", v => ho.SinkAngle = v, Changed, f, "SinkAngle");
+                }
+                if (!ho.ThroughAll) p.AddCombo("드릴 끝", new[] { "평면", "각도 (118°)" }, ho.DrillPoint ? 1 : 0, i => { ho.DrillPoint = i == 1; Changed(); });
+                break;
+            }
+
+            case SplitBodyFeature sp:
+            {
+                Select("분할할 본체", "bodies", sp.Bodies.Count, "본체", () => sp.Bodies.Clear());
+                var planes = new[] { "XY", "XZ", "YZ", "face" };
+                p.AddCombo("분할 도구", new[] { "XY 평면", "XZ 평면", "YZ 평면", "평면인 면" }, Math.Max(0, Array.IndexOf(planes, sp.Plane)),
+                    i => { sp.Plane = planes[i]; if (i == 3) c.SelectKind = "toolface"; BuildCommandPanel(); Changed(); });
+                if (sp.Plane == "face") Select("도구 면", "toolface", sp.ToolPick.Length == 3 ? 1 : 0, "면", () => { sp.ToolPick = Array.Empty<double>(); sp.ToolBody = ""; });
+                p.AddNumber("간격띄우기", sp.Offset, "mm", v => sp.Offset = v, Changed, f, "Offset");
+                break;
+            }
+
+            case DraftFeature dr:
+                Select("고정 평면", "neutral", dr.Neutral.Length == 3 ? 1 : 0, "면", () => { dr.Neutral = Array.Empty<double>(); dr.Body = ""; dr.Faces.Clear(); });
+                Select("면", "faces", dr.Faces.Count, "면", () => dr.Faces.Clear());
+                p.AddNumber("각도", dr.Angle, "deg", v => dr.Angle = v, Changed, f, "Angle");
+                p.AddCheck("방향 뒤집기", dr.Flip, v => { dr.Flip = v; Changed(); });
+                break;
+
+            case CoilFeature co:
+                p.AddNumber("지름", co.Diameter, "mm", v => co.Diameter = v, Changed, f, "Diameter");
+                p.AddNumber("회전수", co.Turns, "", v => co.Turns = v, Changed, f, "Turns");
+                p.AddNumber("피치", co.Pitch, "mm", v => co.Pitch = v, Changed, f, "Pitch");
+                p.AddInfo("높이", $"{co.Pitch * co.Turns:0.##} mm");
+                p.AddNumber("단면 크기", co.Section, "mm", v => co.Section = v, Changed, f, "Section");
+                p.AddHeader("위치");
+                p.AddNumber("X", co.X, "mm", v => co.X = v, Changed, f, "X");
+                p.AddNumber("Y", co.Y, "mm", v => co.Y = v, Changed, f, "Y");
+                p.AddNumber("Z (바닥)", co.Z, "mm", v => co.Z = v, Changed, f, "Z");
+                p.AddCombo("생성", OpNames, OpIndex(co.Operation), i => { co.Operation = OpOrder[i]; Changed(); });
+                break;
+
+            case PipeFeature pi:
+                Select("경로", "chains", pi.Chains.Count, "곡선", () => pi.Chains.Clear());
+                p.AddNumber("단면 크기", pi.Diameter, "mm", v => pi.Diameter = v, Changed, f, "Diameter");
+                p.AddCheck("속이 빈", pi.Hollow, v => { pi.Hollow = v; BuildCommandPanel(); Changed(); });
+                if (pi.Hollow) p.AddNumber("단면 두께", pi.Thickness, "mm", v => pi.Thickness = v, Changed, f, "Thickness");
+                p.AddCombo("생성", OpNames, OpIndex(pi.Operation), i => { pi.Operation = OpOrder[i]; Changed(); });
+                break;
+
+            case StitchFeature st:
+                Select("곡면 본체", "bodies", st.Bodies.Count, "본체", () => st.Bodies.Clear());
+                p.AddNumber("스티치 공차", st.Tolerance, "mm", v => st.Tolerance = v, Changed, f, "Tolerance");
+                p.AddText("닫힌 곡면이 되면 솔리드 본체가 됩니다.");
                 break;
 
             case ThickenFeature th:
@@ -573,8 +720,9 @@ public sealed partial class MainWindow
         }
         _cmd = null;
         CloseDialog();
+        SetPrompt(null);
         var used = ProfileList(draft)?.Select(r => r.Sketch).ToHashSet() ?? new HashSet<string>();
-        var chains = draft switch { SurfaceFeature sf => sf.Chains, RibFeature rb => rb.Chains, SweepFeature sw => sw.Path, _ => null };
+        var chains = draft switch { SurfaceFeature sf => sf.Chains.Concat(sf.Path).ToList(), RibFeature rb => rb.Chains, SweepFeature sw => sw.Path, PipeFeature pi => pi.Chains, _ => null };
         if (chains != null) used.UnionWith(chains.Select(c => c.Sketch));
         Commit(() =>
         {
@@ -593,8 +741,13 @@ public sealed partial class MainWindow
     public void CancelCommand()
     {
         if (_cmd == null) return;
+        if (_cmd.Draft != null || _cmd.Id.StartsWith("cam_")) SetPrompt(null);
         _cmd = null;
         _flatView = null;
+        _interference.Clear();
+        _massMarker = null;
+        _camDraft = null;
+        _camSim = null;
         _previewTimer.Stop();
         _preview = null;
         CloseDialog();
@@ -636,10 +789,18 @@ public sealed partial class MainWindow
 
     private void CommandPickChain(ChainRef r)
     {
-        var list = _cmd?.Draft switch { SurfaceFeature sf => sf.Chains, RibFeature rb => rb.Chains, SweepFeature sw => sw.Path, _ => null };
+        var list = _cmd?.Draft switch
+        {
+            SurfaceFeature sf => _cmd.SelectKind == "path" ? sf.Path : sf.Chains,
+            RibFeature rb => rb.Chains,
+            SweepFeature sw => sw.Path,
+            PipeFeature pi => pi.Chains,
+            _ => null,
+        };
         if (list == null) return;
-        if (_cmd!.Draft is SweepFeature) list.Clear();
+        if (_cmd!.Draft is SweepFeature || _cmd.Draft is SurfaceFeature { Kind: "sweep" } || _cmd.Draft is SurfaceFeature { Kind: "revolve" } && _cmd.SelectKind == "path") list.Clear();
         if (!list.Remove(r)) list.Add(r);
+        if (_cmd.Draft is SurfaceFeature { Kind: "sweep" } && _cmd.SelectKind == "chains") _cmd.SelectKind = "path";
         BuildCommandPanel();
         RefreshPreview();
     }
@@ -652,6 +813,13 @@ public sealed partial class MainWindow
             case PressPullFeature pp: pp.Body = bodyId; pp.Pick = new[] { point.X, point.Y, point.Z }; break;
             case BossFeature bo: bo.Body = bodyId; bo.Pick = new[] { point.X, point.Y, point.Z }; break;
             case FlangeFeature fl: fl.Body = bodyId; fl.Pick = new[] { point.X, point.Y, point.Z }; break;
+            case SplitBodyFeature sp: sp.ToolBody = bodyId; sp.ToolPick = new[] { point.X, point.Y, point.Z }; break;
+            case DraftFeature dr:
+                if (dr.Body != bodyId) dr.Faces.Clear();
+                dr.Body = bodyId;
+                dr.Neutral = new[] { point.X, point.Y, point.Z };
+                _cmd.SelectKind = "faces";
+                break;
             default: return;
         }
         BuildCommandPanel();
@@ -910,6 +1078,22 @@ public sealed partial class MainWindow
 
     private void CommandPickFace(string bodyId, V3 point)
     {
+        if (_cmd?.Draft is HoleFeature ho)
+        {
+            if (ho.Body != bodyId) { ho.Body = bodyId; ho.Points.Clear(); }
+            ho.Points.Add(new[] { point.X, point.Y, point.Z });
+            BuildCommandPanel();
+            RefreshPreview();
+            return;
+        }
+        if (_cmd?.Draft is DraftFeature dr)
+        {
+            if (dr.Body != bodyId) return;   // faces of the body with the fixed plane only
+            dr.Faces.Add(new[] { point.X, point.Y, point.Z });
+            BuildCommandPanel();
+            RefreshPreview();
+            return;
+        }
         if (_cmd?.Draft is not ShellFeature sh) return;
         if (sh.Body != bodyId)
         {
@@ -1035,7 +1219,9 @@ public sealed partial class MainWindow
                 {
                     if (_selBodies.Count == 0) return;
                     var ids = _selBodies.ToList();
-                    Commit(() => { foreach (var id in ids) _doc.BodyColors[id] = h; });
+                    var appearance = name;
+                    Commit(() => { foreach (var id in ids) { _doc.BodyColors[id] = h; _doc.BodyAppearances[id] = appearance; } });
+                    ResetRayTrace();
                 };
                 grid.Children.Add(b);
             }
@@ -1129,6 +1315,13 @@ public sealed partial class MainWindow
             case Key.S when ctrl && !e.KeyModifiers.HasFlag(KeyModifiers.Shift): _ = Save(); break;
             case Key.O when ctrl: _ = OpenFile(); break;
             case Key.N when ctrl: _ = NewDesign(); break;
+            case Key.Escape when _workspace == "drawing" && _cmd == null:
+                if (_sheetTool != null) CancelDrawingTool();
+                else SelectSheetItem(null, -1, -1);
+                break;
+            case Key.Delete when _workspace == "drawing" && _cmd == null:
+                DeleteSheetSelection();
+                break;
             case Key.Escape:
                 if (_pickPlane) _pendingSketchTool = null;
                 if (_sk != null)
@@ -1263,7 +1456,13 @@ public sealed partial class MainWindow
         _dirty = false;
         _selBodies.Clear();
         _selProfiles.Clear();
+        _viewCache.Clear();
         Rebuild();
+        if (_workspace == "drawing")
+        {
+            if (CurrentDrawing == null) SetWorkspace("design");
+            else RefreshDrawing(true);
+        }
     }
 
     private async Task OpenFile()

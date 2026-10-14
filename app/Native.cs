@@ -17,6 +17,7 @@ internal static unsafe class Native
     [DllImport(Lib)] public static extern uint osc_pick(int x, int y, double* depth, uint* face);
     [DllImport(Lib)] public static extern int osc_export(uint* handles, byte* names, int n, byte* path, uint format);
     [DllImport(Lib)] public static extern uint osc_import(byte* path, uint format);
+    [DllImport(Lib)] public static extern void osc_raytrace(uint* handles, float* mats, int n, double* cam, int w, int h, double* env, int spp, ulong seed, float* accum, int total, byte* outRgba);
 
     public static byte[] Utf8Z(string s) => Encoding.UTF8.GetBytes(s + "\0");
 }
@@ -61,6 +62,16 @@ internal static unsafe class Occt
     [DllImport(Lib)] public static extern int ok_solids(uint h, uint* outHandles, int max);
     [DllImport(Lib)] public static extern int ok_write_step(uint* hs, int n, byte* path);
     [DllImport(Lib)] public static extern uint ok_from_mesh(double* tris, int n);
+    [DllImport(Lib)] public static extern int ok_hlr(uint* hs, int n, double dx, double dy, double dz, double rx, double ry, double rz, double defl);
+    [DllImport(Lib)] public static extern void ok_hlr_kinds(int* kinds);
+    [DllImport(Lib)] public static extern uint ok_split(uint h, double ox, double oy, double oz, double nx, double ny, double nz);
+    [DllImport(Lib)] public static extern uint ok_draft(uint h, double* pts, int n, double px, double py, double pz, double deg);
+    [DllImport(Lib)] public static extern uint ok_pipe(uint wire, double r, double inner);
+    [DllImport(Lib)] public static extern uint ok_coil(double cx, double cy, double cz, double r, double pitch, double turns, double section);
+    [DllImport(Lib)] public static extern uint ok_sew(uint* hs, int n, double tol);
+    [DllImport(Lib)] public static extern int ok_offset2d(uint face, double dist, double defl);
+    [DllImport(Lib)] public static extern int ok_face_offset(uint h, double x, double y, double z, double dist, double defl, int outerOnly);
+    [DllImport(Lib)] public static extern int ok_holes(uint h, double* out5, int max);
 
     private static bool _init;
 
@@ -228,6 +239,178 @@ public sealed unsafe class Solid
     }
 
     public Solid Thicken(double t) => Wrap(Occt.ok_thicken(Shape, t));
+
+    /// <summary>Surface swept by revolving open or closed sketch curves.</summary>
+    public static Solid SurfaceRevolve(PlaneFrame f, IReadOnlyList<Piece> curves, P2 axisPoint, P2 axisDir, double angle)
+    {
+        uint wire = WireOf(f, curves);
+        var o = f.At(axisPoint);
+        var d = (f.U * axisDir.X + f.V * axisDir.Y).Norm();
+        try { return Wrap(Occt.ok_revol(wire, o.X, o.Y, o.Z, d.X, d.Y, d.Z, angle)); }
+        finally { Occt.ok_free(wire); }
+    }
+
+    /// <summary>Surface swept by moving sketch curves along a path.</summary>
+    public static Solid SurfaceSweep(PlaneFrame f, IReadOnlyList<Piece> curves, PlaneFrame pathFrame, IReadOnlyList<Piece> path)
+    {
+        uint wire = WireOf(f, curves);
+        uint p = WireOf(pathFrame, path);
+        try { return Wrap(Occt.ok_sweep(wire, p)); }
+        finally { Occt.ok_free(wire); Occt.ok_free(p); }
+    }
+
+    /// <summary>Surface lofted through curves (open or closed) in order.</summary>
+    public static Solid SurfaceLoft(IReadOnlyList<(PlaneFrame frame, IReadOnlyList<Piece> curves)> sections)
+    {
+        var wires = sections.Select(s => WireOf(s.frame, s.curves)).ToArray();
+        try
+        {
+            fixed (uint* pw = wires) return Wrap(Occt.ok_loft(pw, wires.Length, 0));
+        }
+        finally
+        {
+            foreach (var w in wires) Occt.ok_free(w);
+        }
+    }
+
+    /// <summary>Pipe of the given outer radius along sketch curves (hollow when inner &gt; 0).</summary>
+    public static Solid Pipe(PlaneFrame f, IReadOnlyList<Piece> path, double radius, double inner)
+    {
+        uint wire = WireOf(f, path);
+        try { return Wrap(Occt.ok_pipe(wire, radius, inner)); }
+        finally { Occt.ok_free(wire); }
+    }
+
+    public static Solid Coil(V3 c, double radius, double pitch, double turns, double section)
+    {
+        Occt.Init();
+        return Wrap(Occt.ok_coil(c.X, c.Y, c.Z, radius, pitch, turns, section));
+    }
+
+    /// <summary>Surfaces sewn together (closed shells become solids).</summary>
+    public static Solid Sew(IReadOnlyList<Solid> parts, double tolerance)
+    {
+        var hs = parts.Select(p => p.Shape).ToArray();
+        fixed (uint* ph = hs) return Wrap(Occt.ok_sew(ph, hs.Length, tolerance));
+    }
+
+    /// <summary>The solids on either side of a plane (one solid when the plane misses the body).</summary>
+    public List<Solid> Split(V3 origin, V3 normal)
+    {
+        uint whole = Occt.ok_split(Shape, origin.X, origin.Y, origin.Z, normal.X, normal.Y, normal.Z);
+        if (whole == 0) throw new InvalidOperationException(Occt.LastError());
+        try { return Parts(whole); }
+        finally { Occt.ok_free(whole); }
+    }
+
+    private static List<Solid> Parts(uint whole)
+    {
+        var handles = new uint[4096];
+        int count;
+        fixed (uint* ph = handles) count = Occt.ok_solids(whole, ph, handles.Length);
+        return handles.Take(Math.Max(0, count)).Select(h => new Solid(h)).ToList();
+    }
+
+    /// <summary>Taper the faces at the points by an angle, pulling along the planar face at <paramref name="neutral"/>.</summary>
+    public Solid Draft(IReadOnlyList<V3> facePoints, V3 neutral, double degrees) =>
+        PointOp(facePoints, (p, n) => Occt.ok_draft(Shape, (double*)p, n, neutral.X, neutral.Y, neutral.Z, degrees));
+
+    /// <summary>
+    /// Hidden-line projection of solids: polylines in sheet coordinates (x right, y up) with their kind
+    /// (0 visible, 1 visible outline, 2 tangent, 3 hidden, 4 hidden outline).
+    /// </summary>
+    public static List<(int kind, P2[] pts)> Project(IReadOnlyList<Solid> solids, V3 dir, V3 right, double deflection)
+    {
+        Occt.Init();
+        var hs = solids.Select(s => s.Shape).ToArray();
+        int n;
+        fixed (uint* ph = hs) n = Occt.ok_hlr(ph, hs.Length, dir.X, dir.Y, dir.Z, right.X, right.Y, right.Z, deflection);
+        if (n < 0) throw new InvalidOperationException(Occt.LastError());
+        var result = new List<(int, P2[])>(n);
+        if (n == 0) return result;
+        var xyz = new double[Occt.ok_edges_points() * 3];
+        var counts = new int[n];
+        var kinds = new int[n];
+        fixed (double* px = xyz)
+        fixed (int* pc = counts, pk = kinds)
+        {
+            Occt.ok_edges_copy(px, pc);
+            Occt.ok_hlr_kinds(pk);
+        }
+        int o = 0;
+        for (int i = 0; i < n; i++)
+        {
+            var pts = new P2[counts[i]];
+            for (int k = 0; k < counts[i]; k++, o++) pts[k] = new P2(xyz[o * 3], xyz[o * 3 + 1]);
+            result.Add((kinds[i], pts));
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Boundary loops of the planar face at <paramref name="pick"/> offset by <paramref name="distance"/>
+    /// (negative = inward) as closed 3D polylines; null when there is no planar face there.
+    /// </summary>
+    public List<V3[]>? FaceOffset(V3 pick, double distance, bool outerOnly, double deflection = 0.01)
+    {
+        int n = Occt.ok_face_offset(Shape, pick.X, pick.Y, pick.Z, distance, deflection, outerOnly ? 1 : 0);
+        if (n < 0) return null;
+        var loops = new List<V3[]>();
+        if (n == 0) return loops;
+        var xyz = new double[Occt.ok_edges_points() * 3];
+        var counts = new int[n];
+        fixed (double* px = xyz)
+        fixed (int* pc = counts)
+            Occt.ok_edges_copy(px, pc);
+        int o = 0;
+        foreach (var c in counts)
+        {
+            var loop = new V3[c];
+            for (int k = 0; k < c; k++, o++) loop[k] = new V3(xyz[o * 3], xyz[o * 3 + 1], xyz[o * 3 + 2]);
+            loops.Add(loop);
+        }
+        return loops;
+    }
+
+    /// <summary>Vertical cylindrical holes: centre, radius and the z range they span.</summary>
+    public List<(double x, double y, double r, double top, double bottom)> Holes()
+    {
+        var o = new double[5 * 512];
+        int n;
+        fixed (double* p = o) n = Occt.ok_holes(Shape, p, 512);
+        var list = new List<(double, double, double, double, double)>();
+        for (int i = 0; i < n; i++) list.Add((o[i * 5], o[i * 5 + 1], o[i * 5 + 2], o[i * 5 + 3], o[i * 5 + 4]));
+        return list;
+    }
+
+    /// <summary>
+    /// Boundary loops of a profile region offset by <paramref name="distance"/> (negative = inward), as
+    /// closed polylines in the sketch plane. Empty when the region vanishes.
+    /// </summary>
+    public static List<List<P2>> OffsetRegion(PlaneFrame f, IReadOnlyList<Profile> region, double distance, double deflection = 0.01)
+    {
+        uint face = Face(f, region);
+        try
+        {
+            int n = Occt.ok_offset2d(face, distance, deflection);
+            var loops = new List<List<P2>>();
+            if (n <= 0) return loops;
+            var xyz = new double[Occt.ok_edges_points() * 3];
+            var counts = new int[n];
+            fixed (double* px = xyz)
+            fixed (int* pc = counts)
+                Occt.ok_edges_copy(px, pc);
+            int o = 0;
+            foreach (var c in counts)
+            {
+                var loop = new List<P2>(c);
+                for (int k = 0; k < c; k++, o++) loop.Add(f.Project(new V3(xyz[o * 3], xyz[o * 3 + 1], xyz[o * 3 + 2])));
+                loops.Add(loop);
+            }
+            return loops;
+        }
+        finally { Occt.ok_free(face); }
+    }
 
     public Solid PressPull(V3 p, double d) => Wrap(Occt.ok_press_pull(Shape, p.X, p.Y, p.Z, d));
 

@@ -6,6 +6,7 @@ pub mod build;
 pub mod csg;
 pub mod geom;
 pub mod io;
+pub mod raytrace;
 pub mod render;
 
 use build::Frame;
@@ -319,6 +320,44 @@ pub unsafe extern "C" fn osc_import(path: *const c_char, format: u32) -> u32 {
     let Ok(data) = std::fs::read(&path) else { return 0 };
     let m = if format == 0 { io::read_stl(&data) } else { std::str::from_utf8(&data).ok().and_then(io::read_obj) };
     m.map_or(0, |m| add(m.oriented()))
+}
+
+/// Progressive path tracing (render workspace).
+///
+/// `mats`: 5 floats per item (r, g, b, metallic, roughness). `cam`: as for `osc_render`.
+/// `env` (24 doubles): sky top rgb, sky horizon rgb, ground rgb, sun direction xyz, sun rgb,
+/// sun radius (degrees), ground height, ground on, ground reflection, backdrop on, backdrop rgb, exposure,
+/// studio soft box brightness (25 doubles).
+/// Adds `spp` samples per pixel into `accum` (w·h·3 floats) and writes the tone-mapped average of
+/// `total` samples into `out` (RGBA).
+///
+/// # Safety
+/// All pointers must be valid for the sizes above.
+#[no_mangle]
+pub unsafe extern "C" fn osc_raytrace(handles: *const u32, mats: *const f32, n: i32, cam: *const f64, w: i32, h: i32, env: *const f64, spp: i32, seed: u64, accum: *mut f32, total: i32, out: *mut u8) {
+    let n = n.max(0) as usize;
+    let (w, h) = (w.max(1) as usize, h.max(1) as usize);
+    let hs = std::slice::from_raw_parts(handles, n);
+    let ms = std::slice::from_raw_parts(mats, n * 5);
+    let c = std::slice::from_raw_parts(cam, 15);
+    let e = std::slice::from_raw_parts(env, 25);
+    let solids: Vec<Option<Arc<Solid>>> = hs.iter().map(|&k| get(k)).collect();
+    let mut key: Vec<u64> = hs.iter().map(|&k| k as u64).collect();
+    key.extend(ms.iter().map(|&m| m.to_bits() as u64));
+    let scene = raytrace::cached_scene(key, || {
+        let list: Vec<(&Solid, raytrace::Material)> = solids
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| {
+                s.as_deref().map(|s| (s, raytrace::Material { color: [ms[i * 5] as f64, ms[i * 5 + 1] as f64, ms[i * 5 + 2] as f64], metallic: ms[i * 5 + 3] as f64, roughness: ms[i * 5 + 4] as f64 }))
+            })
+            .collect();
+        raytrace::Scene::build(&list)
+    });
+    let camera = raytrace::Camera { eye: v3(c[0], c[1], c[2]), right: v3(c[3], c[4], c[5]), up: v3(c[6], c[7], c[8]), fwd: v3(c[9], c[10], c[11]), focal: c[12], cx: c[13], cy: c[14] };
+    let acc = std::slice::from_raw_parts_mut(accum, w * h * 3);
+    let px = std::slice::from_raw_parts_mut(out, w * h * 4);
+    raytrace::render(&scene, &raytrace::Env::from(e), &camera, w, h, spp.max(1) as usize, seed, acc, total.max(1) as usize, px);
 }
 
 #[cfg(test)]

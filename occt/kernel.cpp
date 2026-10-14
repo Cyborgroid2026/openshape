@@ -6,6 +6,18 @@
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepAlgoAPI_Splitter.hxx>
+#include <BRepLib.hxx>
+#include <BRepOffsetAPI_DraftAngle.hxx>
+#include <BRepOffsetAPI_MakeOffset.hxx>
+#include <BRepOffsetAPI_MakePipeShell.hxx>
+#include <BRepTools_WireExplorer.hxx>
+#include <ElSLib.hxx>
+#include <GCE2d_MakeSegment.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <HLRAlgo_Projector.hxx>
+#include <HLRBRep_Algo.hxx>
+#include <HLRBRep_HLRToShape.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -63,6 +75,7 @@
 #include <gp_GTrsf.hxx>
 #include <gp_Pln.hxx>
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -937,6 +950,393 @@ API uint32_t ok_from_mesh(const double* tris, int n) {
         }
         return put(sewn);
     });
+}
+
+// ------------------------------------------------------------------- drawings (hidden line removal)
+
+namespace {
+thread_local std::vector<int32_t> g_kinds;
+
+/// Append the polyline of every edge of s to g_buf/g_counts with the given kind.
+void add_polylines(const TopoDS_Shape& s, int kind, double defl) {
+    if (s.IsNull()) return;
+    BRepLib::BuildCurves3d(s);
+    for (TopExp_Explorer e(s, TopAbs_EDGE); e.More(); e.Next()) {
+        const TopoDS_Edge& edge = TopoDS::Edge(e.Current());
+        if (BRep_Tool::Degenerated(edge)) continue;
+        BRepAdaptor_Curve c(edge);
+        GCPnts_TangentialDeflection pts(c, 0.1, defl);
+        int n = 0;
+        for (int k = 1; k <= pts.NbPoints(); k++) {
+            gp_Pnt p = pts.Value(k);
+            g_buf.push_back(p.X());
+            g_buf.push_back(p.Y());
+            g_buf.push_back(p.Z());
+            n++;
+        }
+        if (n < 2) {
+            g_buf.resize(g_buf.size() - n * 3);
+            continue;
+        }
+        g_counts.push_back(n);
+        g_kinds.push_back(kind);
+    }
+}
+}  // namespace
+
+/// Orthographic hidden-line projection of shapes. dir points from the viewer into the scene and
+/// right is the sheet's x direction (sheet y = -dir x right). Projected points are (x, y, 0).
+/// Kinds: 0 visible sharp edge, 1 visible outline, 2 visible tangent edge, 3 hidden edge, 4 hidden outline.
+/// Returns the polyline count; fetch with ok_edges_points / ok_edges_copy and ok_hlr_kinds.
+API int ok_hlr(const uint32_t* hs, int n, double dx, double dy, double dz, double rx, double ry, double rz, double defl) {
+    g_buf.clear();
+    g_counts.clear();
+    g_kinds.clear();
+    try {
+        g_error.clear();
+        TopoDS_Compound c;
+        BRep_Builder b;
+        b.MakeCompound(c);
+        for (int i = 0; i < n; i++) {
+            TopoDS_Shape s;
+            if (get(hs[i], s)) b.Add(c, s);
+        }
+        gp_Dir toViewer(-dx, -dy, -dz), right(rx, ry, rz);
+        HLRAlgo_Projector proj(gp_Ax2(gp_Pnt(0, 0, 0), toViewer, right));
+        Handle(HLRBRep_Algo) algo = new HLRBRep_Algo();
+        algo->Add(c);
+        algo->Projector(proj);
+        algo->Update();
+        algo->Hide();
+        HLRBRep_HLRToShape out(algo);
+        double d = std::max(1e-3, defl);
+        add_polylines(out.VCompound(), 0, d);
+        add_polylines(out.OutLineVCompound(), 1, d);
+        add_polylines(out.Rg1LineVCompound(), 2, d);
+        add_polylines(out.HCompound(), 3, d);
+        add_polylines(out.OutLineHCompound(), 4, d);
+    } catch (Standard_Failure& e) {
+        g_error = e.GetMessageString() ? e.GetMessageString() : "투영 뷰를 만들 수 없습니다";
+        return -1;
+    } catch (...) {
+        g_error = "투영 뷰를 만들 수 없습니다";
+        return -1;
+    }
+    return (int)g_counts.size();
+}
+
+API void ok_hlr_kinds(int32_t* out) { std::memcpy(out, g_kinds.data(), g_kinds.size() * sizeof(int32_t)); }
+
+// ------------------------------------------------------------------- more modelling
+
+/// Split a shape by the infinite plane through o with normal nrm. Returns the split result (use ok_solids).
+API uint32_t ok_split(uint32_t h, double ox, double oy, double oz, double nx, double ny, double nz) {
+    return guarded([&]() -> uint32_t {
+        TopoDS_Shape s;
+        if (!get(h, s)) return 0;
+        gp_Pln pl(gp_Pnt(ox, oy, oz), gp_Dir(nx, ny, nz));
+        Bnd_Box box;
+        BRepBndLib::Add(s, box);
+        double x0, y0, z0, x1, y1, z1;
+        box.Get(x0, y0, z0, x1, y1, z1);
+        double u, v;
+        ElSLib::Parameters(pl, gp_Pnt((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2), u, v);
+        double d = diag(s) + 10;
+        TopoDS_Face tool = BRepBuilderAPI_MakeFace(pl, u - d, u + d, v - d, v + d).Face();
+        BRepAlgoAPI_Splitter sp;
+        TopTools_ListOfShape args, tools;
+        args.Append(s);
+        tools.Append(tool);
+        sp.SetArguments(args);
+        sp.SetTools(tools);
+        sp.Build();
+        if (sp.HasErrors() || !sp.IsDone()) {
+            g_error = "본체를 분할할 수 없습니다";
+            return 0;
+        }
+        return put(sp.Shape());
+    });
+}
+
+/// Draft the faces nearest to pts by deg, pulling along the outward normal of the planar face
+/// nearest to (px, py, pz), which is also the neutral plane.
+API uint32_t ok_draft(uint32_t h, const double* pts, int n, double px, double py, double pz, double deg) {
+    return guarded([&]() -> uint32_t {
+        TopoDS_Shape s;
+        if (!get(h, s)) return 0;
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(s, TopAbs_FACE, faces);
+        double tol = 0.5 + 1e-3 * diag(s);
+        int nf = nearest(faces, gp_Pnt(px, py, pz), tol);
+        if (nf == 0) {
+            g_error = "고정 평면을 찾을 수 없습니다";
+            return 0;
+        }
+        const TopoDS_Face& neutral = TopoDS::Face(faces(nf));
+        BRepAdaptor_Surface surf(neutral, false);
+        if (surf.GetType() != GeomAbs_Plane) {
+            g_error = "고정 평면은 평면인 면이어야 합니다";
+            return 0;
+        }
+        gp_Pln pl = surf.Plane();
+        gp_Dir pull = pl.Axis().Direction();
+        if (neutral.Orientation() == TopAbs_REVERSED) pull.Reverse();
+        BRepOffsetAPI_DraftAngle draft(s);
+        for (int i = 0; i < n; i++) {
+            int f = nearest(faces, gp_Pnt(pts[i * 3], pts[i * 3 + 1], pts[i * 3 + 2]), tol);
+            if (f == 0 || f == nf) continue;
+            draft.Add(TopoDS::Face(faces(f)), pull, deg * M_PI / 180.0, pl);
+            if (!draft.AddDone()) {
+                g_error = "이 면에는 기울기를 줄 수 없습니다 (고정 평면에 수직인 면을 선택하세요)";
+                return 0;
+            }
+        }
+        draft.Build();
+        if (!draft.IsDone()) {
+            g_error = "기울기를 만들 수 없습니다";
+            return 0;
+        }
+        return put(draft.Shape());
+    });
+}
+
+namespace {
+/// Solid swept along a wire with a circular section of radius r at the wire's start.
+TopoDS_Shape pipe_along(const TopoDS_Wire& w, double r) {
+    BRepTools_WireExplorer we(w);
+    if (!we.More()) throw Standard_Failure("경로가 비어 있습니다");
+    const TopoDS_Edge& e0 = we.Current();
+    BRepAdaptor_Curve c(e0);
+    bool rev = e0.Orientation() == TopAbs_REVERSED;
+    double t = rev ? c.LastParameter() : c.FirstParameter();
+    gp_Pnt p;
+    gp_Vec d;
+    c.D1(t, p, d);
+    if (rev) d.Reverse();
+    TopoDS_Wire section = BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(p, gp_Dir(d)), r)).Edge()).Wire();
+    BRepOffsetAPI_MakePipeShell ps(w);
+    ps.SetMode(false);
+    ps.SetTransitionMode(BRepBuilderAPI_RoundCorner);
+    ps.Add(section);
+    ps.Build();
+    if (!ps.IsDone()) throw Standard_Failure("파이프를 만들 수 없습니다 (반지름이 경로의 굽힘보다 작은지 확인하세요)");
+    ps.MakeSolid();
+    return ps.Shape();
+}
+}  // namespace
+
+/// Pipe of outer radius r along a wire; hollow when inner > 0.
+API uint32_t ok_pipe(uint32_t wire, double r, double inner) {
+    return guarded([&]() -> uint32_t {
+        TopoDS_Shape w;
+        if (!get(wire, w)) return 0;
+        TopoDS_Shape outer = pipe_along(TopoDS::Wire(w), r);
+        if (inner <= 1e-9) return put(outer);
+        BRepAlgoAPI_Cut cut(outer, pipe_along(TopoDS::Wire(w), inner));
+        if (cut.HasErrors()) {
+            g_error = "속이 빈 파이프를 만들 수 없습니다";
+            return 0;
+        }
+        return put(cut.Shape());
+    });
+}
+
+/// Coil: a circular section of radius r swept along a helix of radius R about the Z axis through
+/// (cx, cy, cz), rising pitch per turn.
+API uint32_t ok_coil(double cx, double cy, double cz, double R, double pitch, double turns, double r) {
+    return guarded([&]() -> uint32_t {
+        Handle(Geom_CylindricalSurface) cyl = new Geom_CylindricalSurface(gp_Ax3(gp_Pnt(cx, cy, cz), gp::DZ(), gp::DX()), R);
+        gp_Dir2d dir(2 * M_PI, pitch);
+        double len = turns * std::sqrt(4 * M_PI * M_PI + pitch * pitch);
+        Handle(Geom2d_TrimmedCurve) seg = GCE2d_MakeSegment(gp_Lin2d(gp_Pnt2d(0, 0), dir), 0, len).Value();
+        TopoDS_Edge e = BRepBuilderAPI_MakeEdge(seg, cyl).Edge();
+        BRepLib::BuildCurves3d(e);
+        TopoDS_Wire w = BRepBuilderAPI_MakeWire(e).Wire();
+        BRepOffsetAPI_MakePipeShell ps(w);
+        ps.SetMode(gp::DZ());   // constant binormal keeps the section upright along the helix
+        gp_Pnt p0(cx + R, cy, cz);
+        gp_Dir t(0, 2 * M_PI * R, pitch);
+        ps.Add(BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(p0, t), r)).Edge()).Wire());
+        ps.Build();
+        if (!ps.IsDone()) {
+            g_error = "코일을 만들 수 없습니다";
+            return 0;
+        }
+        ps.MakeSolid();
+        return put(ps.Shape());
+    });
+}
+
+/// Sew surface bodies together; closed results become solids.
+API uint32_t ok_sew(const uint32_t* hs, int n, double tol) {
+    return guarded([&]() -> uint32_t {
+        BRepBuilderAPI_Sewing sew(tol);
+        for (int i = 0; i < n; i++) {
+            TopoDS_Shape s;
+            if (!get(hs[i], s)) return 0;
+            sew.Add(s);
+        }
+        sew.Perform();
+        TopoDS_Shape sewn = sew.SewedShape();
+        TopoDS_Compound c;
+        BRep_Builder b;
+        b.MakeCompound(c);
+        int shells = 0;
+        for (TopExp_Explorer e(sewn, TopAbs_SHELL); e.More(); e.Next()) {
+            shells++;
+            const TopoDS_Shell& sh = TopoDS::Shell(e.Current());
+            if (BRep_Tool::IsClosed(sh)) {
+                BRepBuilderAPI_MakeSolid ms(sh);
+                if (ms.IsDone()) {
+                    Handle(ShapeFix_Solid) fs = new ShapeFix_Solid(ms.Solid());
+                    fs->Perform();
+                    TopoDS_Shape solid = fs->Solid();
+                    GProp_GProps g;
+                    BRepGProp::VolumeProperties(solid, g);
+                    if (g.Mass() < 0) solid.Reverse();
+                    b.Add(c, solid);
+                    continue;
+                }
+            }
+            b.Add(c, sh);
+        }
+        if (shells == 0) return put(sewn);
+        return put(c);
+    });
+}
+
+namespace {
+/// Closed polylines of a planar face's boundary offset by dist (positive grows outward) into
+/// g_buf/g_counts; only the outer loop when outer_only. Returns the loop count.
+int offset_face(const TopoDS_Face& fc, double dist, double defl, bool outer_only) {
+    TopoDS_Shape r;
+    if (std::fabs(dist) < 1e-9) r = fc;
+    else {
+        BRepOffsetAPI_MakeOffset mo;
+        if (outer_only) {
+            mo.Init(GeomAbs_Arc);
+            mo.AddWire(BRepTools::OuterWire(fc));
+        } else mo.Init(fc, GeomAbs_Arc);
+        mo.Perform(dist);
+        if (!mo.IsDone()) return 0;   // offset collapsed: nothing left
+        r = mo.Shape();
+    }
+    if (std::fabs(dist) < 1e-9 && outer_only) r = BRepTools::OuterWire(fc);
+    for (TopExp_Explorer ew(r, TopAbs_WIRE); ew.More(); ew.Next()) {
+        int n = 0;
+        for (BRepTools_WireExplorer we(TopoDS::Wire(ew.Current())); we.More(); we.Next()) {
+            const TopoDS_Edge& edge = we.Current();
+            if (BRep_Tool::Degenerated(edge)) continue;
+            BRepAdaptor_Curve c(edge);
+            GCPnts_TangentialDeflection pts(c, 0.1, std::max(1e-3, defl));
+            int m = pts.NbPoints();
+            bool rev = edge.Orientation() == TopAbs_REVERSED;
+            for (int k = 0; k < m; k++) {
+                if (k == 0 && n > 0) continue;   // shared with the previous edge's end
+                gp_Pnt p = pts.Value(rev ? m - k : k + 1);
+                g_buf.push_back(p.X());
+                g_buf.push_back(p.Y());
+                g_buf.push_back(p.Z());
+                n++;
+            }
+        }
+        if (n >= 2) g_counts.push_back(n);
+        else g_buf.resize(g_buf.size() - n * 3);
+    }
+    return (int)g_counts.size();
+}
+}  // namespace
+
+/// 2D offset of a planar face's boundary (positive grows outward). Returns the loop count; each loop
+/// is one closed polyline, fetched with ok_edges_points / ok_edges_copy.
+API int ok_offset2d(uint32_t face, double dist, double defl) {
+    g_buf.clear();
+    g_counts.clear();
+    try {
+        g_error.clear();
+        TopoDS_Shape f;
+        if (!get(face, f)) return -1;
+        for (TopExp_Explorer e(f, TopAbs_FACE); e.More(); e.Next()) return offset_face(TopoDS::Face(e.Current()), dist, defl, false);
+        return -1;
+    } catch (...) {
+        return 0;
+    }
+}
+
+/// Offset of the planar face of h nearest to (x, y, z) (only its outer loop when outerOnly);
+/// loops as for ok_offset2d. -1 when there is no planar face there.
+API int ok_face_offset(uint32_t h, double x, double y, double z, double dist, double defl, int outerOnly) {
+    g_buf.clear();
+    g_counts.clear();
+    try {
+        g_error.clear();
+        TopoDS_Shape s;
+        if (!get(h, s)) return -1;
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(s, TopAbs_FACE, faces);
+        int f = nearest(faces, gp_Pnt(x, y, z), 0.5 + 1e-3 * diag(s));
+        if (f == 0) return -1;
+        const TopoDS_Face& face = TopoDS::Face(faces(f));
+        if (BRepAdaptor_Surface(face, false).GetType() != GeomAbs_Plane) {
+            g_error = "평면인 면을 선택하세요";
+            return -1;
+        }
+        return offset_face(face, dist, defl, outerOnly != 0);
+    } catch (...) {
+        return 0;
+    }
+}
+
+/// Vertical cylindrical holes of a solid: 5 doubles each (centre x, y, radius, top z, bottom z),
+/// with the halves of split cylinders merged. Returns the hole count.
+API int ok_holes(uint32_t h, double* out, int max) {
+    TopoDS_Shape s;
+    if (!get(h, s)) return -1;
+    std::vector<std::array<double, 5>> holes;
+    try {
+        TopTools_IndexedMapOfShape faces;
+        TopExp::MapShapes(s, TopAbs_FACE, faces);
+        for (int i = 1; i <= faces.Extent(); i++) {
+            const TopoDS_Face& face = TopoDS::Face(faces(i));
+            BRepAdaptor_Surface surf(face, true);
+            if (surf.GetType() != GeomAbs_Cylinder) continue;
+            gp_Cylinder cyl = surf.Cylinder();
+            gp_Dir ax = cyl.Axis().Direction();
+            if (std::fabs(ax.Z()) < 0.999) continue;
+            // inside surface: the face normal points at the axis
+            double u = (surf.FirstUParameter() + surf.LastUParameter()) / 2, v = (surf.FirstVParameter() + surf.LastVParameter()) / 2;
+            gp_Pnt p;
+            gp_Vec du, dv;
+            surf.D1(u, v, p, du, dv);
+            gp_Vec nrm = du.Crossed(dv);
+            if (face.Orientation() == TopAbs_REVERSED) nrm.Reverse();
+            gp_Pnt c = cyl.Axis().Location();
+            gp_Vec radial(gp_Pnt(c.X(), c.Y(), p.Z()), p);
+            if (nrm.Dot(radial) >= 0) continue;
+            Bnd_Box b;
+            BRepBndLib::Add(face, b);
+            double x0, y0, z0, x1, y1, z1;
+            b.Get(x0, y0, z0, x1, y1, z1);
+            double r = cyl.Radius();
+            bool merged = false;
+            for (auto& hh : holes)
+                if (std::fabs(hh[0] - c.X()) < 1e-4 && std::fabs(hh[1] - c.Y()) < 1e-4 && std::fabs(hh[2] - r) < 1e-4) {
+                    hh[3] = std::max(hh[3], z1);
+                    hh[4] = std::min(hh[4], z0);
+                    merged = true;
+                }
+            if (!merged) holes.push_back({c.X(), c.Y(), r, z1, z0});
+        }
+    } catch (...) {
+        return -1;
+    }
+    int n = 0;
+    for (auto& hh : holes) {
+        if (n >= max) break;
+        std::memcpy(out + n * 5, hh.data(), sizeof(double) * 5);
+        n++;
+    }
+    return n;
 }
 
 // ------------------------------------------------------------------- sketch solver (SolveSpace)

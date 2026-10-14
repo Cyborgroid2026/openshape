@@ -99,6 +99,10 @@ bool Near(double a, double b, double rel = 0.015) => Math.Abs(a - b) <= rel * Ma
 if (Environment.GetEnvironmentVariable("OSC_JUMP") == "sketchtools") goto SketchTools;
 if (Environment.GetEnvironmentVariable("OSC_JUMP") == "shortcuts") goto Shortcuts;
 if (Environment.GetEnvironmentVariable("OSC_JUMP") == "updates") goto Updates;
+if (Environment.GetEnvironmentVariable("OSC_JUMP") == "designtools") goto DesignTools;
+if (Environment.GetEnvironmentVariable("OSC_JUMP") == "drawing") goto Drawing;
+if (Environment.GetEnvironmentVariable("OSC_JUMP") == "render") goto Render;
+if (Environment.GetEnvironmentVariable("OSC_JUMP") == "manufacture") goto Manufacture;
 Shot("start");
 Check(w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "솔리드") && w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "브라우저"),
     "toolbar tabs and browser are shown");
@@ -864,6 +868,317 @@ var shaFile = Path.Combine(outDir, "abc.txt");
 File.WriteAllText(shaFile, "abc");
 Check(OpenShapeInstaller.NativeCore.Sha256File(shaFile) == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "Rust installer core computes SHA-256");
 iw.Close();
+
+// ------------------------------------------------------------------ design tools added for Fusion parity
+DesignTools:
+int loadCount = 0;
+void Load(Doc d)
+{
+    d.Marker = d.Features.Count;
+    var file = Path.Combine(outDir, $"design_{++loadCount}.osc");
+    File.WriteAllText(file, d.Save());
+    w.OpenPath(file);
+    Pump();
+}
+SketchFeature LineSketch(string plane, params double[][] lines) =>
+    new() { Name = "스케치" + lines.Length, Plane = plane, Entities = lines.Select(l => new SketchEntity { Kind = "line", P = l }).ToList(), Visible = false };
+double BoxVol = 40 * 40 * 20;
+Doc BoxDoc() => new() { Features = { new PrimitiveFeature { Name = "상자1", Shape = "box", A = 40, B = 40, C = 20 } } };
+
+// hole: click the top face, through all
+Load(BoxDoc());
+w.RunCommand("hole");
+Check(w.Command?.Draft is HoleFeature, "hole dialog opens");
+Click(World(new V3(5, 5, 20)));
+Check(w.Command?.Draft is HoleFeature { Points.Count: 1 }, "clicking the top face places a hole point");
+SetCombo("범위", 1);
+SetField("지름", "6");
+w.RefreshPreview();
+Shot("hole_preview");
+Click(Text("확인"));
+Check(w.State.Bodies.Count == 1 && Near(Volume(), BoxVol - Math.PI * 9 * 20), $"through hole removes π·3²·20 (volume {Volume():0})");
+
+// counterbore hole with flat bottom, evaluated from the model
+var dt_cb = BoxDoc();
+dt_cb.Features.Add(new HoleFeature { Name = "구멍1", Body = dt_cb.Features[0].Id + ":0", Points = { new[] { 0.0, 0.0, 20.0 } }, Type = "counterbore", Diameter = 6, Depth = 12, DrillPoint = false, CounterDiameter = 10, CounterDepth = 4 });
+Load(dt_cb);
+double dt_cbCut = Math.PI * 25 * 4 + Math.PI * 9 * 8;
+Check(dt_cb.Features[1].Error == null && Near(Volume(), BoxVol - dt_cbCut), $"counterbore hole volume ({Volume():0} ≈ {BoxVol - dt_cbCut:0})");
+
+// split body by the XY plane at half height
+var dt_sp = BoxDoc();
+dt_sp.Features.Add(new SplitBodyFeature { Name = "본체 분할1", Bodies = { dt_sp.Features[0].Id + ":0" }, Plane = "XY", Offset = 10 });
+Load(dt_sp);
+Check(w.State.Bodies.Count == 2 && w.State.Bodies.All(b => Near(b.Solid.Info.Volume, BoxVol / 2)), "split body makes two halves");
+
+// draft the four side faces by 5° about the dt_bottom face
+var dt_dr = BoxDoc();
+dt_dr.Features.Add(new DraftFeature
+{
+    Name = "기울기1", Body = dt_dr.Features[0].Id + ":0", Neutral = new[] { 0.0, 0.0, 0.0 }, Angle = 5,
+    Faces = { new[] { 20.0, 0, 10 }, new[] { -20.0, 0, 10 }, new[] { 0, 20.0, 10 }, new[] { 0, -20.0, 10 } },
+});
+Load(dt_dr);
+// the top shrinks to (40 - 2·20·tan5°)²: a dt_frustum of a square pyramid
+double dt_top = 40 - 2 * 20 * Math.Tan(5 * Math.PI / 180);
+double dt_frustum = 20.0 / 3 * (1600 + dt_top * dt_top + 40 * dt_top);
+Check(dt_dr.Features[1].Error == null && Near(Volume(), dt_frustum, 0.005), $"draft tapers the sides ({Volume():0} ≈ {dt_frustum:0})");
+
+// coil
+var dt_co = new Doc { Features = { new CoilFeature { Name = "코일1", Diameter = 30, Pitch = 8, Turns = 3, Section = 3 } } };
+Load(dt_co);
+double dt_helix = 3 * Math.Sqrt(Math.Pow(2 * Math.PI * 15, 2) + 64);
+Check(dt_co.Features[0].Error == null && Near(Volume(), Math.PI * 1.5 * 1.5 * dt_helix, 0.02), $"coil volume ({Volume():0} ≈ {Math.PI * 2.25 * dt_helix:0})");
+w.FitAll();
+Shot("coil");
+
+// pipe along an L-shaped path, hollow
+var dt_pathSk = LineSketch("XZ", new[] { 0.0, 0, 50, 0 }, new[] { 50.0, 0, 50, 40 });
+var dt_pd = new Doc { Features = { dt_pathSk, new PipeFeature { Name = "파이프1", Chains = { new ChainRef(dt_pathSk.Id, 0) }, Diameter = 8, Hollow = true, Thickness = 1, Operation = BodyOp.NewBody } } };
+Load(dt_pd);
+Check(dt_pd.Features[1].Error == null && w.State.Bodies.Count == 1 && Volume() > Math.PI * (16 - 9) * 80 && Volume() < Math.PI * (16 - 9) * 95, $"hollow pipe follows the path ({Volume():0} mm³)");
+w.FitAll();
+Shot("pipe");
+
+// surface revolve: a vertical line 10 from the axis makes a cylinder surface
+var dt_rs = LineSketch("XZ", new[] { 10.0, 0, 10, 30 });
+var dt_rd = new Doc { Features = { dt_rs, new SurfaceFeature { Name = "회전1", Kind = "revolve", Chains = { new ChainRef(dt_rs.Id, 0) }, Axis = 1, Angle = 360 } } };
+Load(dt_rd);
+Check(dt_rd.Features[1].Error == null && w.State.Bodies.Count == 1 && Near(w.State.Bodies[0].Solid.Info.Area, 2 * Math.PI * 10 * 30), "surface revolve makes a cylindrical surface");
+
+// surface loft between two parallel lines makes a flat strip
+var dt_l1 = LineSketch("XY", new[] { 0.0, 0, 20, 0 });
+var dt_l2 = new SketchFeature { Name = "스케치2", Plane = "XY", Offset = 10, Entities = { new SketchEntity { Kind = "line", P = new[] { 0.0, 0, 20, 0 } } }, Visible = false };
+var dt_ld = new Doc { Features = { dt_l1, dt_l2, new SurfaceFeature { Name = "로프트1", Kind = "loft", Chains = { new ChainRef(dt_l1.Id, 0), new ChainRef(dt_l2.Id, 0) } } } };
+Load(dt_ld);
+Check(dt_ld.Features[2].Error == null && Near(w.State.Bodies.Single().Solid.Info.Area, 200), "surface loft between two lines");
+
+// stitch: an open square dt_tube plus dt_top and dt_bottom patches closes into a solid
+var dt_sq = new SketchFeature { Name = "스케치1", Plane = "XY", Entities = { new SketchEntity { Kind = "rect", P = new[] { 0.0, 0, 20, 20 } } }, Visible = false };
+var dt_sqTop = new SketchFeature { Name = "스케치2", Plane = "XY", Offset = 15, Entities = { new SketchEntity { Kind = "rect", P = new[] { 0.0, 0, 20, 20 } } }, Visible = false };
+var dt_tube = new SurfaceFeature { Name = "돌출1", Chains = { new ChainRef(dt_sq.Id, 0) }, Distance = 15 };
+var dt_bottom = new SurfaceFeature { Name = "패치1", Patch = true, Chains = { new ChainRef(dt_sq.Id, 0) } };
+var dt_topPatch = new SurfaceFeature { Name = "패치2", Patch = true, Chains = { new ChainRef(dt_sqTop.Id, 0) } };
+var dt_st = new Doc { Features = { dt_sq, dt_sqTop, dt_tube, dt_bottom, dt_topPatch } };
+dt_st.Features.Add(new StitchFeature { Name = "스티치1", Bodies = { dt_tube.Id + ":0", dt_bottom.Id + ":0", dt_topPatch.Id + ":0" } });
+Load(dt_st);
+Check(dt_st.Features[^1].Error == null && w.State.Bodies.Count == 1 && w.State.Bodies[0].Solid.Info.Solids == 1 && Near(Volume(), 20 * 20 * 15), $"stitch closes surfaces into a solid ({Volume():0})");
+
+// interference between two overlapping boxes
+var dt_it = new Doc
+{
+    Features =
+    {
+        new PrimitiveFeature { Name = "상자1", Shape = "box", A = 20, B = 20, C = 20 },
+        new PrimitiveFeature { Name = "상자2", Shape = "box", X = 10, A = 20, B = 20, C = 20 },
+    },
+};
+Load(dt_it);
+w.RunCommand("interference");
+Pump();
+Check(w.State.Bodies.Count == 2 && w.Interferences(w.State.Bodies).Count == 1 && Near(w.Interferences(w.State.Bodies)[0].common.Info.Volume, 10 * 20 * 20), "interference finds the 10×20×20 overlap");
+Check(w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "간섭 1건" && t.IsEffectivelyVisible), "interference panel lists one clash");
+Shot("interference");
+Key(Avalonia.Input.Key.Escape);
+
+// centre of mass: steel box 40×40×20 = 32 cm³ · 7.85 = 251.2 g at (0, 0, 10)
+Load(BoxDoc());
+w.RunCommand("centerofmass");
+Pump();
+Check(w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "251.2 g" && t.IsEffectivelyVisible), "centre of mass panel shows the steel mass");
+Check(w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "10 mm" && t.IsEffectivelyVisible), "centre of mass height is 10 mm");
+Shot("center_of_mass");
+Key(Avalonia.Input.Key.Escape);
+
+// ------------------------------------------------------------------ drawing workspace
+Drawing:
+var dwgDoc = new Doc { Features = { new PrimitiveFeature { Name = "상자1", Shape = "box", A = 60, B = 40, C = 20 } } };
+dwgDoc.Features.Add(new HoleFeature { Name = "구멍1", Body = dwgDoc.Features[0].Id + ":0", Points = { new[] { 0.0, 0.0, 20.0 } }, Diameter = 10, ThroughAll = true });
+dwgDoc.Marker = 2;
+var dwgFile = Path.Combine(outDir, "drawing_part.osc");
+File.WriteAllText(dwgFile, dwgDoc.Save());
+w.OpenPath(dwgFile);
+Pump();
+Click(Tip("작업공간 변경"));
+Click(Text("도면"));
+Pump(8);
+Check(w.Workspace == "drawing" && w.SheetView.IsEffectivelyVisible && !w.View.IsEffectivelyVisible, "workspace menu switches to the drawing sheet");
+Check(w.CurrentDrawing != null && w.Command?.Id == "dwg_base", "a new drawing opens the base view dialog");
+Click(Text("확인"));
+var dwg = w.CurrentDrawing!;
+Check(dwg.Views.Count == 1 && dwg.Views[0].Orientation == "front", "base view (front) is placed");
+Point SheetPt(P2 sheet) => w.SheetView.TranslatePoint(w.SheetView.ToScreen(sheet), w)!.Value;
+Point ViewPt(DrawingViewDef v, double x, double y) => SheetPt(DrawingRenderer.ToSheet(dwg, v, w.GeometryOf(v), new P2(x, y)));
+var front = dwg.Views[0];
+// projected views: click right of and above the base view (third angle)
+Click(SheetPt(new P2(front.X + 110, front.Y + 3)));
+Click(SheetPt(new P2(front.X - 2, front.Y + 80)));
+Click(SheetPt(new P2(front.X + 110, front.Y + 80)));
+Key(Avalonia.Input.Key.Escape);
+Check(dwg.Views.Count == 4, $"three projected views added ({dwg.Views.Count - 1})");
+var rightV = dwg.Views.FirstOrDefault(v => v.Orientation == "right");
+var topV = dwg.Views.FirstOrDefault(v => v.Orientation == "top");
+Check(rightV != null && topV != null && dwg.Views.Any(v => v.Orientation == "iso"), "projected views are right, top and isometric");
+Check(rightV != null && Math.Abs(rightV.Y - front.Y) < 1e-9 && topV != null && Math.Abs(topV.X - front.X) < 1e-9, "projected views stay aligned with the base view");
+var fg = w.GeometryOf(front);
+Check(Near(fg.Max.X - fg.Min.X, 60) && Near(fg.Max.Y - fg.Min.Y, 20), "front view spans 60 × 20");
+Check(fg.Lines.Any(l => l.kind >= 3), "front view shows the hole as hidden lines");
+var tg = w.GeometryOf(topV!);
+Check(tg.Circles.Count == 1 && Near(tg.Circles[0].r, 5), "top view finds the hole circle");
+// dimension the front view's bottom edge
+w.RunCommand("dwg_dim");
+Click(ViewPt(front, -30, 0));
+Click(ViewPt(front, 30, 0));
+Click(ViewPt(front, 0, -12));
+Check(dwg.Dims.Count == 1 && dwg.Dims[0].Kind == "horizontal" && Near(dwg.Dims[0].Value, 60), "horizontal dimension of 60 mm");
+Click(ViewPt(front, 30, 0));
+Click(ViewPt(front, 30, 20));
+Click(ViewPt(front, 42, 10));
+Check(dwg.Dims.Count == 2 && dwg.Dims[1].Kind == "vertical" && Near(dwg.Dims[1].Value, 20), "vertical dimension of 20 mm");
+Key(Avalonia.Input.Key.Escape);
+w.RunCommand("dwg_dia");
+Click(ViewPt(topV!, 5, 0));
+Click(ViewPt(topV!, 18, 14));
+Check(dwg.Dims.Count == 3 && dwg.Dims[2].Kind == "diameter" && dwg.Dims[2].Text == "⌀10", "diameter dimension ⌀10 on the hole");
+Key(Avalonia.Input.Key.Escape);
+Shot("drawing");
+// undo removes the last dimension, redo brings it back
+w.Undo();
+Check(w.CurrentDrawing!.Dims.Count == 2, "undo removes the diameter dimension");
+w.Redo();
+dwg = w.CurrentDrawing!;
+Check(dwg.Dims.Count == 3, "redo restores it");
+// export
+var pdf = Path.Combine(outDir, "drawing.pdf");
+var dxf = Path.Combine(outDir, "drawing.dxf");
+var svg = Path.Combine(outDir, "drawing.svg");
+w.ExportDrawing(pdf);
+w.ExportDrawing(dxf);
+w.ExportDrawing(svg);
+w.ExportDrawing(Path.Combine(outDir, $"{++step:00}_drawing_export.png"));
+Check(File.Exists(pdf) && File.ReadAllText(pdf).StartsWith("%PDF") && new FileInfo(pdf).Length > 2000, "PDF is written");
+var dxfText = File.ReadAllText(dxf);
+Check(dxfText.Contains("\nHIDDEN\n") && dxfText.Contains("\nTEXT\n") && dxfText.Contains("\nDIM\n") && dxfText.TrimEnd().EndsWith("EOF"), "DXF has visible/hidden/dimension layers and text");
+Check(File.ReadAllText(svg).Contains("stroke-dasharray") && File.ReadAllText(svg).Contains("⌀10"), "SVG has dashed hidden lines and the ⌀10 text");
+// the drawing is saved with the design
+var dwgSaved = Path.Combine(outDir, "drawing_saved.osc");
+w.SaveTo(dwgSaved);
+w.SetWorkspace("design");
+Check(w.View.IsEffectivelyVisible && !w.SheetView.IsEffectivelyVisible, "back to the design workspace shows the 3D canvas");
+w.OpenPath(dwgSaved);
+Check(w.Document.Drawings.Count == 1 && w.Document.Drawings[0].Views.Count == 4 && w.Document.Drawings[0].Dims.Count == 3, "drawing is saved in the .osc design");
+
+// ------------------------------------------------------------------ render workspace
+Render:
+var rDoc = new Doc
+{
+    Features =
+    {
+        new PrimitiveFeature { Name = "상자1", Shape = "box", A = 40, B = 40, C = 20 },
+        new PrimitiveFeature { Name = "구1", Shape = "sphere", X = 0, Y = 0, Z = 35, A = 14 },
+    },
+};
+rDoc.BodyColors[rDoc.Features[0].Id + ":0"] = "#D9342B";
+rDoc.BodyAppearances[rDoc.Features[0].Id + ":0"] = "플라스틱 - 빨간색";
+rDoc.BodyColors[rDoc.Features[1].Id + ":0"] = "#E6E8EA";
+rDoc.BodyAppearances[rDoc.Features[1].Id + ":0"] = "크롬 - 광택";
+rDoc.Marker = 2;
+var rFile = Path.Combine(outDir, "render_part.osc");
+File.WriteAllText(rFile, rDoc.Save());
+w.OpenPath(rFile);
+w.FitAll();
+w.SetWorkspace("render");
+Check(w.View.RayTrace, "render workspace turns on the in-canvas render");
+var rayStart = DateTime.Now;
+// headless: no dispatcher timers, so drive the passes the timer would start
+Thread.Sleep(300);
+while (w.View.RaySamples < 6 && (DateTime.Now - rayStart).TotalSeconds < 60) { w.View.RayStep(); Pump(); Thread.Sleep(30); }
+Check(w.View.RaySamples >= 6, $"in-canvas render accumulates passes ({w.View.RaySamples})");
+Shot("render_incanvas");
+var (mHex, mMetal, mRough) = w.Document.MaterialOf(w.State.Bodies[1].Id);
+Check(mMetal == 1 && mRough < 0.1 && w.Document.MaterialOf(w.State.Bodies[0].Id).metallic == 0, "appearances carry metal/plastic materials");
+var rgba = w.RenderImage(360, 240, 48).GetAwaiter().GetResult();
+var renderPng = Path.Combine(outDir, $"{++step:00}_render_image.png");
+MainWindow.SavePng(rgba, 360, 240, renderPng);
+int reddish = 0;
+for (int i = 0; i < 360 * 240; i++) if (rgba[i * 4] > 110 && rgba[i * 4] > rgba[i * 4 + 1] * 1.8 && rgba[i * 4] > rgba[i * 4 + 2] * 1.8) reddish++;
+Check(File.Exists(renderPng) && reddish > 400, $"rendered image shows the red plastic box ({reddish} red pixels)");
+w.RunCommand("scenesettings");
+Pump();
+SetCombo("환경 프리셋", 2);
+Check(w.Document.Render.Environment == "dark" && w.View.RaySamples == 0, "scene settings change the environment and restart the render");
+Key(Avalonia.Input.Key.Escape);
+w.SetWorkspace("design");
+Check(!w.View.RayTrace, "leaving the render workspace turns the in-canvas render off");
+
+// ------------------------------------------------------------------ manufacture workspace
+Manufacture:
+var mDoc = new Doc
+{
+    Features =
+    {
+        new PrimitiveFeature { Name = "상자1", Shape = "box", A = 60, B = 40, C = 20 },
+        new PrimitiveFeature { Name = "상자2", Shape = "box", Z = 15, A = 30, B = 20, C = 10, Operation = BodyOp.Cut },
+    },
+};
+mDoc.Features.Add(new HoleFeature { Name = "구멍1", Body = mDoc.Features[0].Id + ":0", Points = { new[] { 22.0, 12, 20 }, new[] { -22.0, -12, 20 } }, Diameter = 5, ThroughAll = true });
+mDoc.Marker = 3;
+var mFile = Path.Combine(outDir, "cam_part.osc");
+File.WriteAllText(mFile, mDoc.Save());
+w.OpenPath(mFile);
+w.SetWorkspace("manufacture");
+Pump();
+Check(w.Workspace == "manufacture" && w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "밀링" && t.IsEffectivelyVisible), "manufacture workspace opens with the milling toolbar");
+Check(w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text?.StartsWith("설정1 (64×44×21)") == true && t.IsEffectivelyVisible), "setup shows the 64×44×21 stock in the browser");
+IEnumerable<V3> CutPts(Toolpath t) => t.Moves.Where(m => !m.Rapid).Select(m => m.P);
+// facing
+w.RunCommand("cam_face");
+Pump();
+Click(Text("확인"));
+var faceTp = w.Toolpaths[w.Cam.Operations[^1].Id];
+Check(faceTp.Error == null && CutPts(faceTp).All(p => Math.Abs(p.Z - 20) < 1e-6) && CutPts(faceTp).Max(p => p.X) > 32, "facing cuts the 1 mm of top stock across the whole stock");
+// pocket: click the pocket floor
+w.RunCommand("cam_pocket");
+Pump();
+Click(World(new V3(0, 0, 15)));
+Shot("cam_pocket_preview");
+Click(Text("확인"));
+var pocketTp = w.Toolpaths[w.Cam.Operations[^1].Id];
+var pz = CutPts(pocketTp).Select(p => Math.Round(p.Z, 3)).Distinct().OrderByDescending(z => z).ToList();
+Check(pocketTp.Error == null && pz.SequenceEqual(new[] { 19.5, 18, 16.5, 15 }), $"pocket steps down 1.5 mm to the floor ({string.Join(", ", pz)})");
+Check(CutPts(pocketTp).All(p => Math.Abs(p.X) <= 12 + 1e-3 && Math.Abs(p.Y) <= 7 + 1e-3), "pocket stays a tool radius inside the walls");
+// contour around the top face
+w.RunCommand("cam_contour");
+Pump();
+Click(World(new V3(25, -15, 20)));
+Click(Text("확인"));
+var contourTp = w.Toolpaths[w.Cam.Operations[^1].Id];
+Check(contourTp.Error == null && Near(CutPts(contourTp).Max(p => p.X), 33, 0.002) && Near(CutPts(contourTp).Min(p => p.Z), -0.5, 0.002), "contour runs a tool radius outside the part down through the bottom");
+// drilling finds both ⌀5 through holes
+w.RunCommand("cam_drill");
+Pump();
+Click(Text("확인"));
+var drillOp = w.Cam.Operations[^1];
+var drillTp = w.Toolpaths[drillOp.Id];
+Check(drillTp.Error == null && w.Cam.Tool(drillOp.Tool)!.Diameter == 5 && CutPts(drillTp).Count(p => p.Z < 0) == 2, "drill picks the ⌀5 drill and both through holes");
+Shot("cam_toolpaths");
+w.RunCommand("cam_simulate");
+Pump();
+Check(w.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == "예상 가공 시간" && t.IsEffectivelyVisible), "simulation shows the machining time");
+Shot("cam_simulation");
+Key(Avalonia.Input.Key.Escape);
+// G-code
+var gcode = w.PostProcess();
+Check(gcode.Contains("G21") && gcode.Contains("S10000 M3") && gcode.Contains("M0") && gcode.TrimEnd().EndsWith("M30"), "GRBL program: metric, spindle, manual tool change pause, end");
+Check(gcode.Contains("X54 Y34"), "G-code is relative to the stock's top front-left corner (hole at X54 Y34)");
+w.Cam.Post = "fanuc";
+var fanuc = w.PostProcess();
+Check(fanuc.Contains("O1001") && fanuc.Contains("T6 M6") && fanuc.Contains("G43 H6"), "Fanuc program has tool changes with length offsets");
+var camSaved = Path.Combine(outDir, "cam_saved.osc");
+w.SaveTo(camSaved);
+w.OpenPath(camSaved);
+Check(w.Document.Cam.Operations.Count == 4 && w.Document.Cam.Post == "fanuc", "CAM operations are saved with the design");
+w.SetWorkspace("design");
 
 Console.WriteLine(failures.Count == 0 ? "ALL PASSED" : $"{failures.Count} FAILED");
 return failures.Count == 0 ? 0 : 1;
